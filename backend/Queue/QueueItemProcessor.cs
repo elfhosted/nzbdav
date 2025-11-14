@@ -393,11 +393,10 @@ public class QueueItemProcessor(
         {
             var url = Environment.GetEnvironmentVariable("SHARE_NZB_CACHE_URL");
             if (string.IsNullOrWhiteSpace(url)) return; // no endpoint configured -> skip
-            // Minimal metadata: just the final (deobfuscated) mount folder name.
-            var metadataJson = JsonSerializer.Serialize(new
-            {
-                name = mountFolder.Name
-            });
+            // Minimal metadata name: prefer original (if not obfuscated); else use deobfuscated mount folder name.
+            var originalName = historyItem.JobName;
+            var chosenName = ObfuscationUtil.IsProbablyObfuscated(originalName) ? mountFolder.Name : originalName;
+            var metadataJson = JsonSerializer.Serialize(new { name = chosenName });
 
             // Original NZB contents.
             var nzbBytes = Encoding.UTF8.GetBytes(queueNzbContents.NzbContents);
