@@ -137,13 +137,22 @@ class Program
 
     private static ExportInlineNzbsOptions BuildExportOptions(string[] args)
     {
-        var enabled = args.Contains("--auto-export-inline-nzbs") || args.Contains("--export-inline-nzbs");
+        var enabled = args.Contains("--auto-export-inline-nzbs")
+                      || args.Contains("--export-inline-nzbs")
+                      || EnvironmentUtil.IsVariableTrue("NZB_STORAGE_AUTO_EXPORT_INLINE_NZBS");
+
         var batchSize = TryParseIntOption(args, "--export-batch-size")
                         ?? TryParseIntOption(args, "--batch-size")
+                        ?? GetIntFromEnv("NZB_STORAGE_EXPORT_BATCH_SIZE")
                         ?? 100;
-        var delayMs = TryParseIntOption(args, "--export-delay-ms") ?? 500;
+
+        var delayMs = TryParseIntOption(args, "--export-delay-ms")
+                      ?? GetIntFromEnv("NZB_STORAGE_EXPORT_DELAY_MS")
+                      ?? 500;
+
         var reportPath = GetOptionValue(args, "--export-report-path")
-                         ?? GetOptionValue(args, "--report-path");
+                         ?? GetOptionValue(args, "--report-path")
+                         ?? Environment.GetEnvironmentVariable("NZB_STORAGE_EXPORT_REPORT_PATH");
 
         return new ExportInlineNzbsOptions
         {
@@ -152,5 +161,12 @@ class Program
             DelayBetweenBatches = TimeSpan.FromMilliseconds(Math.Max(0, delayMs)),
             ReportPath = reportPath
         };
+    }
+
+    private static int? GetIntFromEnv(string variable)
+    {
+        return int.TryParse(Environment.GetEnvironmentVariable(variable), out var value)
+            ? value
+            : null;
     }
 }

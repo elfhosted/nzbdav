@@ -260,6 +260,15 @@ Arguments:
 | `--export-delay-ms <n>` | Optional delay between batches in milliseconds (default 500). Gives normal queue work time to acquire the write lock. |
 | `--export-report-path <path>` | Optional report destination. Defaults to `<app>/reports/export-inline-nzbs-<timestamp>.json`. |
 
+Environment equivalents (useful inside Docker Compose) are available too:
+
+| Env var | Description |
+| --- | --- |
+| `NZB_STORAGE_AUTO_EXPORT_INLINE_NZBS=true` | Enables the exporter without CLI flags. |
+| `NZB_STORAGE_EXPORT_BATCH_SIZE=50` | Overrides the batch size. |
+| `NZB_STORAGE_EXPORT_DELAY_MS=250` | Overrides the inter-batch delay in milliseconds. |
+| `NZB_STORAGE_EXPORT_REPORT_PATH=/config/export-inline-nzbs.json` | Picks a fixed report file path. |
+
 The exporter writes a JSON report with start/end timestamps, exported count, remaining inline rows, and per-item success/failure details (ID, job name, category, filesystem path, hash). Keep the report as proof of what moved before vacuuming the database.
 
 
