@@ -1,18 +1,21 @@
 ﻿using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Queue.FileProcessors;
+using NzbWebDAV.Services;
 
 namespace NzbWebDAV.Queue.FileAggregators;
 
 public class MultipartMkvAggregator
 (
     DavDatabaseClient dbClient,
+    DavMetadataStorageService metadataStorageService,
     DavItem mountDirectory,
     bool checkedFullHealth
 ) : BaseAggregator
 {
     protected override DavDatabaseClient DBClient => dbClient;
     protected override DavItem MountDirectory => mountDirectory;
+    private readonly DavMetadataStorageService _metadataStorageService = metadataStorageService;
 
     public override void UpdateDatabase(List<BaseProcessor.Result> processorResults)
     {
@@ -41,14 +44,25 @@ public class MultipartMkvAggregator
                 lastHealthCheck: checkedFullHealth ? DateTimeOffset.UtcNow : null
             );
 
+            var metadata = new DavMultipartFile.Meta()
+            {
+                FileParts = fileParts.ToArray()
+            };
+
             var davMultipartFile = new DavMultipartFile()
             {
-                Id = davItem.Id,
-                Metadata = new DavMultipartFile.Meta()
-                {
-                    FileParts = fileParts.ToArray()
-                }
+                Id = davItem.Id
             };
+
+            if (_metadataStorageService.IsEnabled)
+            {
+                davMultipartFile.MetadataStorageHash = _metadataStorageService.StorePayload(metadata);
+                davMultipartFile.Metadata = null;
+            }
+            else
+            {
+                davMultipartFile.Metadata = metadata;
+            }
 
             dbClient.Ctx.Items.Add(davItem);
             dbClient.Ctx.MultipartFiles.Add(davMultipartFile);

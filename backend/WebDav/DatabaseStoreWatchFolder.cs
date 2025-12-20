@@ -9,6 +9,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Queue;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Requests;
 using NzbWebDAV.Websocket;
 
@@ -21,7 +22,8 @@ public class DatabaseStoreWatchFolder(
     ConfigManager configManager,
     UsenetStreamingClient usenetClient,
     QueueManager queueManager,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    DavMetadataStorageService metadataStorageService
 ) : DatabaseStoreCollection(
     davDirectory,
     httpContext,
@@ -29,7 +31,8 @@ public class DatabaseStoreWatchFolder(
     configManager,
     usenetClient,
     queueManager,
-    websocketManager
+    websocketManager,
+    metadataStorageService
 )
 {
     protected override async Task<IStoreItem?> GetItemAsync(GetItemRequest request)

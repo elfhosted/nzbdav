@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.IO;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Database;
@@ -242,6 +243,20 @@ public class ConfigManager
             "database.healthcheck-retention-days",
             "DATABASE_HEALTHCHECK_RETENTION_DAYS",
             defaultValue: 30);
+    }
+
+    public bool IsDavMetadataOffloadEnabled()
+    {
+        var configValue = StringUtil.EmptyToNull(GetConfigValue("database.offload-dav-metadata"))
+                           ?? StringUtil.EmptyToNull(Environment.GetEnvironmentVariable("DATABASE_OFFLOAD_DAV_METADATA"));
+        return configValue != null && bool.TryParse(configValue, out var parsed) ? parsed : false;
+    }
+
+    public string GetDavMetadataDirectory()
+    {
+        var configuredPath = StringUtil.EmptyToNull(GetConfigValue("database.dav-metadata-dir"))
+                             ?? StringUtil.EmptyToNull(Environment.GetEnvironmentVariable("DATABASE_DAV_METADATA_DIR"));
+        return configuredPath ?? Path.Combine(DavDatabaseContext.ConfigPath, "dav-metadata");
     }
 
     private int GetRetentionSetting(string configKey, string environmentVariable, int defaultValue)

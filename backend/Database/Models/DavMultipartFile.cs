@@ -5,7 +5,8 @@ namespace NzbWebDAV.Database.Models;
 public class DavMultipartFile
 {
     public Guid Id { get; set; } // foreign key to DavItem.Id
-    public Meta Metadata { get; set; }
+    public Meta? Metadata { get; set; }
+    public string? MetadataStorageHash { get; set; }
 
     // navigation helpers
     public DavItem? DavItem { get; set; }

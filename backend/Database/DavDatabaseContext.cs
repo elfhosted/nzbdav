@@ -24,11 +24,11 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
         }
     );
 
-    private static ValueConverter<T, string> CreateCompressedJsonConverter<T>(Func<T> fallbackFactory)
+    private static ValueConverter<T?, string?> CreateCompressedJsonConverter<T>(Func<T> fallbackFactory) where T : class
     {
-        return new ValueConverter<T, string>(
-            v => Convert.ToBase64String(CompressionUtil.SerializeToCompressedJson(v ?? fallbackFactory())),
-            v => CompressionUtil.DeserializeCompressedJson(DecodeBase64(v), fallbackFactory)
+        return new ValueConverter<T?, string?>(
+            v => v == null ? null : Convert.ToBase64String(CompressionUtil.SerializeToCompressedJson(v)),
+            v => v == null ? fallbackFactory() : CompressionUtil.DeserializeCompressedJson(DecodeBase64(v), fallbackFactory)
         );
     }
 
@@ -155,7 +155,11 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(f => f.SegmentIds)
                 .HasConversion(CreateCompressedJsonConverter(() => Array.Empty<string>()))
                 .HasColumnType("TEXT")
-                .IsRequired();
+                .IsRequired(false);
+
+            e.Property(f => f.MetadataStorageHash)
+                .HasMaxLength(64)
+                .IsRequired(false);
 
             e.HasOne(f => f.DavItem)
                 .WithOne()
@@ -175,7 +179,11 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(f => f.RarParts)
                 .HasConversion(CreateCompressedJsonConverter(() => Array.Empty<DavRarFile.RarPart>()))
                 .HasColumnType("TEXT")
-                .IsRequired();
+                .IsRequired(false);
+
+            e.Property(f => f.MetadataStorageHash)
+                .HasMaxLength(64)
+                .IsRequired(false);
 
             e.HasOne(f => f.DavItem)
                 .WithOne()
@@ -195,7 +203,11 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(f => f.Metadata)
                 .HasConversion(CreateCompressedJsonConverter(() => new DavMultipartFile.Meta()))
                 .HasColumnType("TEXT")
-                .IsRequired();
+                .IsRequired(false);
+
+            e.Property(f => f.MetadataStorageHash)
+                .HasMaxLength(64)
+                .IsRequired(false);
 
             e.HasOne(f => f.DavItem)
                 .WithOne()

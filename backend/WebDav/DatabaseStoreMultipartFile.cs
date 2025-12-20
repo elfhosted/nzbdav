@@ -5,6 +5,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Streams;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Base;
 
 namespace NzbWebDAV.WebDav;
@@ -14,7 +15,8 @@ public class DatabaseStoreMultipartFile(
     HttpContext httpContext,
     DavDatabaseClient dbClient,
     UsenetStreamingClient usenetClient,
-    ConfigManager configManager
+    ConfigManager configManager,
+    DavMetadataStorageService metadataStorageService
 ) : BaseStoreStreamFile(httpContext)
 {
     public DavItem DavItem => davMultipartFile;
@@ -22,6 +24,7 @@ public class DatabaseStoreMultipartFile(
     public override string UniqueKey => davMultipartFile.Id.ToString();
     public override long FileSize => davMultipartFile.FileSize!.Value;
     public override DateTime CreatedAt => davMultipartFile.CreatedAt;
+    private readonly DavMetadataStorageService _metadataStorageService = metadataStorageService;
 
     protected override async Task<Stream> GetStreamAsync(CancellationToken ct)
     {
@@ -32,13 +35,17 @@ public class DatabaseStoreMultipartFile(
         var id = davMultipartFile.Id;
         var multipartFile = await dbClient.Ctx.MultipartFiles.Where(x => x.Id == id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (multipartFile is null) throw new FileNotFoundException($"Could not find nzb file with id: {id}");
+        var metadata = _metadataStorageService.ResolvePayload(
+            multipartFile.MetadataStorageHash,
+            multipartFile.Metadata,
+            () => new DavMultipartFile.Meta());
         var packedStream = new DavMultipartFileStream(
-            multipartFile.Metadata.FileParts,
+            metadata.FileParts,
             usenetClient,
             configManager.GetArticleBufferSize()
         );
-        return multipartFile.Metadata.AesParams != null
-            ? new AesDecoderStream(packedStream, multipartFile.Metadata.AesParams)
+        return metadata.AesParams != null
+            ? new AesDecoderStream(packedStream, metadata.AesParams)
             : packedStream;
     }
 }

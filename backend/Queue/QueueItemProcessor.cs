@@ -31,6 +31,7 @@ public class QueueItemProcessor(
     ConfigManager configManager,
     WebsocketManager websocketManager,
     HealthCheckService healthCheckService,
+    DavMetadataStorageService metadataStorageService,
     IProgress<int> progress,
     CancellationToken ct
 )
@@ -173,10 +174,14 @@ public class QueueItemProcessor(
             var categoryFolder = await GetOrCreateCategoryFolder().ConfigureAwait(false);
             var mountFolder = await CreateMountFolder(categoryFolder, existingMountFolder, duplicateNzbBehavior)
                 .ConfigureAwait(false);
-            new RarAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
-            new FileAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
-            new SevenZipAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
-            new MultipartMkvAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
+            new RarAggregator(dbClient, metadataStorageService, mountFolder, checkedFullHealth)
+                .UpdateDatabase(fileProcessingResults);
+            new FileAggregator(dbClient, metadataStorageService, mountFolder, checkedFullHealth)
+                .UpdateDatabase(fileProcessingResults);
+            new SevenZipAggregator(dbClient, metadataStorageService, mountFolder, checkedFullHealth)
+                .UpdateDatabase(fileProcessingResults);
+            new MultipartMkvAggregator(dbClient, metadataStorageService, mountFolder, checkedFullHealth)
+                .UpdateDatabase(fileProcessingResults);
 
             // post-processing
             new RenameDuplicatesPostProcessor(dbClient).RenameDuplicates();

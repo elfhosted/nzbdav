@@ -3,6 +3,7 @@ using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Base;
 
 namespace NzbWebDAV.WebDav;
@@ -12,7 +13,8 @@ public class DatabaseStoreNzbFile(
     HttpContext httpContext,
     DavDatabaseClient dbClient,
     INntpClient usenetClient,
-    ConfigManager configManager
+    ConfigManager configManager,
+    DavMetadataStorageService metadataStorageService
 ) : BaseStoreStreamFile(httpContext)
 {
     public DavItem DavItem => davNzbFile;
@@ -20,6 +22,7 @@ public class DatabaseStoreNzbFile(
     public override string UniqueKey => davNzbFile.Id.ToString();
     public override long FileSize => davNzbFile.FileSize!.Value;
     public override DateTime CreatedAt => davNzbFile.CreatedAt;
+    private readonly DavMetadataStorageService _metadataStorageService = metadataStorageService;
 
     protected override async Task<Stream> GetStreamAsync(CancellationToken cancellationToken)
     {
@@ -30,6 +33,10 @@ public class DatabaseStoreNzbFile(
         var id = davNzbFile.Id;
         var file = await dbClient.GetNzbFileAsync(id, cancellationToken).ConfigureAwait(false);
         if (file is null) throw new FileNotFoundException($"Could not find nzb file with id: {id}");
-        return usenetClient.GetFileStream(file.SegmentIds, FileSize, configManager.GetArticleBufferSize());
+        var segmentIds = _metadataStorageService.ResolvePayload(
+            file.MetadataStorageHash,
+            file.SegmentIds,
+            () => Array.Empty<string>());
+        return usenetClient.GetFileStream(segmentIds, FileSize, configManager.GetArticleBufferSize());
     }
 }

@@ -7,6 +7,7 @@ using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Base;
 using NzbWebDAV.WebDav.Requests;
 using NzbWebDAV.Websocket;
@@ -20,12 +21,14 @@ public class DatabaseStoreCollection(
     ConfigManager configManager,
     UsenetStreamingClient usenetClient,
     QueueManager queueManager,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    DavMetadataStorageService metadataStorageService
 ) : BaseStoreReadonlyCollection
 {
     public override string Name => davDirectory.Name;
     public override string UniqueKey => davDirectory.Id.ToString();
     public override DateTime CreatedAt => davDirectory.CreatedAt;
+    private readonly DavMetadataStorageService _metadataStorageService = metadataStorageService;
     private static readonly StaticEmbeddedFile Readme = new("StaticFiles.root.README.md", "README");
 
     protected override async Task<IStoreItem?> GetItemAsync(GetItemRequest request)
@@ -100,25 +103,25 @@ public class DatabaseStoreCollection(
         {
             DavItem.ItemType.IdsRoot =>
                 new DatabaseStoreIdsCollection(
-                    davItem.Name, "", httpContext, dbClient, usenetClient, configManager),
+                    davItem.Name, "", httpContext, dbClient, usenetClient, configManager, _metadataStorageService),
             DavItem.ItemType.Directory when davItem.Id == DavItem.NzbFolder.Id =>
                 new DatabaseStoreWatchFolder(
-                    davItem, httpContext, dbClient, configManager, usenetClient, queueManager, websocketManager),
+                    davItem, httpContext, dbClient, configManager, usenetClient, queueManager, websocketManager, _metadataStorageService),
             DavItem.ItemType.Directory =>
                 new DatabaseStoreCollection(
-                    davItem, httpContext, dbClient, configManager, usenetClient, queueManager, websocketManager),
+                    davItem, httpContext, dbClient, configManager, usenetClient, queueManager, websocketManager, _metadataStorageService),
             DavItem.ItemType.SymlinkRoot =>
                 new DatabaseStoreSymlinkCollection(
                     davItem, dbClient, configManager),
             DavItem.ItemType.NzbFile =>
                 new DatabaseStoreNzbFile(
-                    davItem, httpContext, dbClient, usenetClient, configManager),
+                    davItem, httpContext, dbClient, usenetClient, configManager, _metadataStorageService),
             DavItem.ItemType.RarFile =>
                 new DatabaseStoreRarFile(
-                    davItem, httpContext, dbClient, usenetClient, configManager),
+                    davItem, httpContext, dbClient, usenetClient, configManager, _metadataStorageService),
             DavItem.ItemType.MultipartFile =>
                 new DatabaseStoreMultipartFile(
-                    davItem, httpContext, dbClient, usenetClient, configManager),
+                    davItem, httpContext, dbClient, usenetClient, configManager, _metadataStorageService),
             _ => throw new ArgumentException("Unrecognized directory child type.")
         };
     }

@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 using Serilog;
 
@@ -117,6 +118,23 @@ public static class DatabaseMaintenance
             versionItem.ConfigValue = CompressionVersion.ToString();
         }
         await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    public static async Task<int> OffloadDavMetadataAsync(
+        DavDatabaseContext ctx,
+        DavMetadataStorageService metadataStorageService,
+        CancellationToken ct)
+    {
+        if (!metadataStorageService.IsEnabled) return 0;
+        var total = 0;
+        total += await OffloadNzbMetadataAsync(ctx, metadataStorageService, ct).ConfigureAwait(false);
+        total += await OffloadRarMetadataAsync(ctx, metadataStorageService, ct).ConfigureAwait(false);
+        total += await OffloadMultipartMetadataAsync(ctx, metadataStorageService, ct).ConfigureAwait(false);
+        if (total > 0)
+        {
+            Log.Information("Offloaded {Count} Dav metadata rows to filesystem storage.", total);
+        }
+        return total;
     }
 
     public static async Task VacuumAsync(CancellationToken ct)
@@ -244,5 +262,161 @@ public static class DatabaseMaintenance
         }
 
         return rewritten;
+    }
+
+    private static async Task<int> OffloadNzbMetadataAsync(
+        DavDatabaseContext ctx,
+        DavMetadataStorageService metadataStorageService,
+        CancellationToken ct)
+    {
+        var migrated = 0;
+        var lastRowId = 0L;
+        while (true)
+        {
+            var batch = await ctx.NzbFiles.AsNoTracking()
+                .Where(x => x.MetadataStorageHash == null)
+                .Where(x => EF.Property<long>(x, "rowid") > lastRowId)
+                .OrderBy(x => EF.Property<long>(x, "rowid"))
+                .Take(BatchSize)
+                .Select(x => new
+                {
+                    RowId = EF.Property<long>(x, "rowid"),
+                    x.Id,
+                    x.SegmentIds
+                })
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            if (batch.Count == 0) break;
+            lastRowId = batch.Last().RowId;
+            var updated = 0;
+            foreach (var item in batch)
+            {
+                if (item.SegmentIds == null || item.SegmentIds.Length == 0) continue;
+                var hash = metadataStorageService.StorePayload(item.SegmentIds);
+                var entity = new DavNzbFile
+                {
+                    Id = item.Id,
+                    MetadataStorageHash = hash,
+                    SegmentIds = null
+                };
+                ctx.NzbFiles.Attach(entity);
+                ctx.Entry(entity).Property(x => x.MetadataStorageHash).IsModified = true;
+                ctx.Entry(entity).Property(x => x.SegmentIds).IsModified = true;
+                updated++;
+            }
+
+            if (updated > 0)
+            {
+                migrated += updated;
+                await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
+            ctx.ChangeTracker.Clear();
+        }
+
+        return migrated;
+    }
+
+    private static async Task<int> OffloadRarMetadataAsync(
+        DavDatabaseContext ctx,
+        DavMetadataStorageService metadataStorageService,
+        CancellationToken ct)
+    {
+        var migrated = 0;
+        var lastRowId = 0L;
+        while (true)
+        {
+            var batch = await ctx.RarFiles.AsNoTracking()
+                .Where(x => x.MetadataStorageHash == null)
+                .Where(x => EF.Property<long>(x, "rowid") > lastRowId)
+                .OrderBy(x => EF.Property<long>(x, "rowid"))
+                .Take(BatchSize)
+                .Select(x => new
+                {
+                    RowId = EF.Property<long>(x, "rowid"),
+                    x.Id,
+                    x.RarParts
+                })
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            if (batch.Count == 0) break;
+            lastRowId = batch.Last().RowId;
+            var updated = 0;
+            foreach (var item in batch)
+            {
+                if (item.RarParts == null || item.RarParts.Length == 0) continue;
+                var hash = metadataStorageService.StorePayload(item.RarParts);
+                var entity = new DavRarFile
+                {
+                    Id = item.Id,
+                    MetadataStorageHash = hash,
+                    RarParts = null
+                };
+                ctx.RarFiles.Attach(entity);
+                ctx.Entry(entity).Property(x => x.MetadataStorageHash).IsModified = true;
+                ctx.Entry(entity).Property(x => x.RarParts).IsModified = true;
+                updated++;
+            }
+
+            if (updated > 0)
+            {
+                migrated += updated;
+                await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
+            ctx.ChangeTracker.Clear();
+        }
+
+        return migrated;
+    }
+
+    private static async Task<int> OffloadMultipartMetadataAsync(
+        DavDatabaseContext ctx,
+        DavMetadataStorageService metadataStorageService,
+        CancellationToken ct)
+    {
+        var migrated = 0;
+        var lastRowId = 0L;
+        while (true)
+        {
+            var batch = await ctx.MultipartFiles.AsNoTracking()
+                .Where(x => x.MetadataStorageHash == null)
+                .Where(x => EF.Property<long>(x, "rowid") > lastRowId)
+                .OrderBy(x => EF.Property<long>(x, "rowid"))
+                .Take(BatchSize)
+                .Select(x => new
+                {
+                    RowId = EF.Property<long>(x, "rowid"),
+                    x.Id,
+                    x.Metadata
+                })
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            if (batch.Count == 0) break;
+            lastRowId = batch.Last().RowId;
+            var updated = 0;
+            foreach (var item in batch)
+            {
+                if (item.Metadata == null) continue;
+                var hash = metadataStorageService.StorePayload(item.Metadata);
+                var entity = new DavMultipartFile
+                {
+                    Id = item.Id,
+                    MetadataStorageHash = hash,
+                    Metadata = null
+                };
+                ctx.MultipartFiles.Attach(entity);
+                ctx.Entry(entity).Property(x => x.MetadataStorageHash).IsModified = true;
+                ctx.Entry(entity).Property(x => x.Metadata).IsModified = true;
+                updated++;
+            }
+
+            if (updated > 0)
+            {
+                migrated += updated;
+                await ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
+            ctx.ChangeTracker.Clear();
+        }
+
+        return migrated;
     }
 }

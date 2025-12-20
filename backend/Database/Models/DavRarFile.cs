@@ -5,7 +5,8 @@ namespace NzbWebDAV.Database.Models;
 public class DavRarFile
 {
     public Guid Id { get; set; } // foreign key to DavItem.Id
-    public RarPart[] RarParts { get; set; } = [];
+    public RarPart[]? RarParts { get; set; }
+    public string? MetadataStorageHash { get; set; }
 
     // navigation helpers
     public DavItem? DavItem { get; set; }
@@ -18,11 +19,12 @@ public class DavRarFile
         public long ByteCount { get; set; }
     }
 
-    public DavMultipartFile.Meta ToDavMultipartFileMeta()
+    public DavMultipartFile.Meta ToDavMultipartFileMeta(IEnumerable<RarPart>? source = null)
     {
+        var rarParts = source?.ToArray() ?? RarParts ?? Array.Empty<RarPart>();
         return new DavMultipartFile.Meta
         {
-            FileParts = RarParts.Select(x => new DavMultipartFile.FilePart()
+            FileParts = rarParts.Select(x => new DavMultipartFile.FilePart()
             {
                 SegmentIds = x.SegmentIds,
                 SegmentIdByteRange = LongRange.FromStartAndSize(0, x.PartSize),

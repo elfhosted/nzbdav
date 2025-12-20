@@ -1,18 +1,21 @@
 ﻿using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Queue.FileProcessors;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 
 namespace NzbWebDAV.Queue.FileAggregators;
 
 public class SevenZipAggregator(
     DavDatabaseClient dbClient,
+    DavMetadataStorageService metadataStorageService,
     DavItem mountDirectory,
     bool checkedFullHealth
 ) : BaseAggregator
 {
     protected override DavDatabaseClient DBClient => dbClient;
     protected override DavItem MountDirectory => mountDirectory;
+    private readonly DavMetadataStorageService _metadataStorageService = metadataStorageService;
 
     public override void UpdateDatabase(List<BaseProcessor.Result> processorResults)
     {
@@ -51,9 +54,18 @@ public class SevenZipAggregator(
 
             var davMultipartFile = new DavMultipartFile()
             {
-                Id = davItem.Id,
-                Metadata = davMultipartFileMeta
+                Id = davItem.Id
             };
+
+            if (_metadataStorageService.IsEnabled)
+            {
+                davMultipartFile.MetadataStorageHash = _metadataStorageService.StorePayload(davMultipartFileMeta);
+                davMultipartFile.Metadata = null;
+            }
+            else
+            {
+                davMultipartFile.Metadata = davMultipartFileMeta;
+            }
 
             dbClient.Ctx.Items.Add(davItem);
             dbClient.Ctx.MultipartFiles.Add(davMultipartFile);

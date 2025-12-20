@@ -3,14 +3,21 @@ using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
 using NzbWebDAV.Queue.FileProcessors;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 
 namespace NzbWebDAV.Queue.FileAggregators;
 
-public class RarAggregator(DavDatabaseClient dbClient, DavItem mountDirectory, bool checkedFullHealth) : BaseAggregator
+public class RarAggregator(
+    DavDatabaseClient dbClient,
+    DavMetadataStorageService metadataStorageService,
+    DavItem mountDirectory,
+    bool checkedFullHealth
+) : BaseAggregator
 {
     protected override DavDatabaseClient DBClient => dbClient;
     protected override DavItem MountDirectory => mountDirectory;
+    private readonly DavMetadataStorageService _metadataStorageService = metadataStorageService;
 
     public override void UpdateDatabase(List<BaseProcessor.Result> processorResults)
     {
@@ -58,20 +65,31 @@ public class RarAggregator(DavDatabaseClient dbClient, DavItem mountDirectory, b
                 lastHealthCheck: checkedFullHealth ? DateTimeOffset.UtcNow : null
             );
 
+            var metadata = new DavMultipartFile.Meta()
+            {
+                AesParams = aesParams,
+                FileParts = fileParts.Select(x => new DavMultipartFile.FilePart()
+                {
+                    SegmentIds = x.NzbFile.GetSegmentIds(),
+                    SegmentIdByteRange = LongRange.FromStartAndSize(0, x.PartSize),
+                    FilePartByteRange = x.ByteRangeWithinPart
+                }).ToArray(),
+            };
+
             var davMultipartFile = new DavMultipartFile()
             {
-                Id = davItem.Id,
-                Metadata = new DavMultipartFile.Meta()
-                {
-                    AesParams = aesParams,
-                    FileParts = fileParts.Select(x => new DavMultipartFile.FilePart()
-                    {
-                        SegmentIds = x.NzbFile.GetSegmentIds(),
-                        SegmentIdByteRange = LongRange.FromStartAndSize(0, x.PartSize),
-                        FilePartByteRange = x.ByteRangeWithinPart
-                    }).ToArray(),
-                }
+                Id = davItem.Id
             };
+
+            if (_metadataStorageService.IsEnabled)
+            {
+                davMultipartFile.MetadataStorageHash = _metadataStorageService.StorePayload(metadata);
+                davMultipartFile.Metadata = null;
+            }
+            else
+            {
+                davMultipartFile.Metadata = metadata;
+            }
 
             dbClient.Ctx.Items.Add(davItem);
             dbClient.Ctx.MultipartFiles.Add(davMultipartFile);

@@ -80,6 +80,7 @@ class Program
             .AddSingleton(configManager)
             .AddSingleton(websocketManager)
             .AddSingleton<UsenetStreamingClient>()
+            .AddSingleton<DavMetadataStorageService>()
             .AddSingleton<QueueManager>()
             .AddSingleton<ArrMonitoringService>()
             .AddSingleton<HealthCheckService>()

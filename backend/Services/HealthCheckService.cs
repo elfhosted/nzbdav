@@ -5,6 +5,7 @@ using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
 using Serilog;
@@ -19,6 +20,7 @@ public class HealthCheckService
     private readonly ConfigManager _configManager;
     private readonly INntpClient _usenetClient;
     private readonly WebsocketManager _websocketManager;
+    private readonly DavMetadataStorageService _metadataStorageService;
     private readonly CancellationToken _cancellationToken = SigtermUtil.GetCancellationToken();
 
     private readonly HashSet<string> _missingSegmentIds = [];
@@ -27,12 +29,14 @@ public class HealthCheckService
     (
         ConfigManager configManager,
         UsenetStreamingClient usenetClient,
-        WebsocketManager websocketManager
+        WebsocketManager websocketManager,
+        DavMetadataStorageService metadataStorageService
     )
     {
         _configManager = configManager;
         _usenetClient = usenetClient;
         _websocketManager = websocketManager;
+        _metadataStorageService = metadataStorageService;
 
         _configManager.OnConfigChanged += (_, configEventArgs) =>
         {
@@ -175,7 +179,12 @@ public class HealthCheckService
         if (davItem.Type == DavItem.ItemType.NzbFile)
         {
             var nzbFile = await dbClient.GetNzbFileAsync(davItem.Id, ct).ConfigureAwait(false);
-            return nzbFile?.SegmentIds?.ToList() ?? [];
+            if (nzbFile == null) return [];
+            var segmentIds = _metadataStorageService.ResolvePayload(
+                nzbFile.MetadataStorageHash,
+                nzbFile.SegmentIds,
+                () => Array.Empty<string>());
+            return segmentIds.ToList();
         }
 
         if (davItem.Type == DavItem.ItemType.RarFile)
@@ -183,7 +192,12 @@ public class HealthCheckService
             var rarFile = await dbClient.Ctx.RarFiles
                 .Where(x => x.Id == davItem.Id)
                 .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            return rarFile?.RarParts?.SelectMany(x => x.SegmentIds)?.ToList() ?? [];
+            if (rarFile == null) return [];
+            var rarParts = _metadataStorageService.ResolvePayload(
+                rarFile.MetadataStorageHash,
+                rarFile.RarParts,
+                () => Array.Empty<DavRarFile.RarPart>());
+            return rarParts.SelectMany(x => x.SegmentIds).ToList();
         }
 
         if (davItem.Type == DavItem.ItemType.MultipartFile)
@@ -191,7 +205,12 @@ public class HealthCheckService
             var multipartFile = await dbClient.Ctx.MultipartFiles
                 .Where(x => x.Id == davItem.Id)
                 .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            return multipartFile?.Metadata?.FileParts?.SelectMany(x => x.SegmentIds)?.ToList() ?? [];
+            if (multipartFile == null) return [];
+            var metadata = _metadataStorageService.ResolvePayload(
+                multipartFile.MetadataStorageHash,
+                multipartFile.Metadata,
+                () => new DavMultipartFile.Meta());
+            return metadata.FileParts.SelectMany(x => x.SegmentIds).ToList();
         }
 
         return [];

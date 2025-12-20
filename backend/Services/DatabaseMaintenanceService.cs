@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 using Serilog;
 
@@ -44,8 +45,14 @@ public sealed class DatabaseMaintenanceService : IHostedService, IDisposable
         {
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<DavDatabaseContext>();
+            var metadataStorageService = scope.ServiceProvider.GetRequiredService<DavMetadataStorageService>();
             var cancellationToken = SigtermUtil.GetCancellationToken();
             await DatabaseMaintenance.EnsureCompressedPayloadsAsync(dbContext, cancellationToken).ConfigureAwait(false);
+            if (metadataStorageService.IsEnabled)
+            {
+                await DatabaseMaintenance.OffloadDavMetadataAsync(dbContext, metadataStorageService, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             await DatabaseMaintenance.RunRetentionAsync(dbContext, _configManager, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)

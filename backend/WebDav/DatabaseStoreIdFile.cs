@@ -4,6 +4,7 @@ using NzbWebDAV.Clients.Usenet;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Base;
 
 namespace NzbWebDAV.WebDav;
@@ -13,13 +14,15 @@ public class DatabaseStoreIdFile(
     HttpContext httpContext,
     DavDatabaseClient dbClient,
     UsenetStreamingClient usenetClient,
-    ConfigManager configManager
+    ConfigManager configManager,
+    DavMetadataStorageService metadataStorageService
 ) : BaseStoreReadonlyItem
 {
     public override string Name => davItem.Id.ToString();
     public override string UniqueKey => davItem.Id.ToString();
     public override long FileSize => davItem.FileSize!.Value;
     public override DateTime CreatedAt => davItem.CreatedAt;
+    private readonly DavMetadataStorageService _metadataStorageService = metadataStorageService;
 
     public override Task<Stream> GetReadableStreamAsync(CancellationToken cancellationToken)
     {
@@ -31,11 +34,11 @@ public class DatabaseStoreIdFile(
         return davItem.Type switch
         {
             DavItem.ItemType.NzbFile =>
-                new DatabaseStoreNzbFile(davItem, httpContext, dbClient, usenetClient, configManager),
+                new DatabaseStoreNzbFile(davItem, httpContext, dbClient, usenetClient, configManager, _metadataStorageService),
             DavItem.ItemType.RarFile =>
-                new DatabaseStoreRarFile(davItem, httpContext, dbClient, usenetClient, configManager),
+                new DatabaseStoreRarFile(davItem, httpContext, dbClient, usenetClient, configManager, _metadataStorageService),
             DavItem.ItemType.MultipartFile =>
-                new DatabaseStoreMultipartFile(davItem, httpContext, dbClient, usenetClient, configManager),
+                new DatabaseStoreMultipartFile(davItem, httpContext, dbClient, usenetClient, configManager, _metadataStorageService),
             _ => throw new ArgumentException("Unrecognized id child type.")
         };
     }

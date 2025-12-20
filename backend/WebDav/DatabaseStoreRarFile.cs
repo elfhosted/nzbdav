@@ -5,6 +5,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Streams;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Base;
 
 namespace NzbWebDAV.WebDav;
@@ -14,7 +15,8 @@ public class DatabaseStoreRarFile(
     HttpContext httpContext,
     DavDatabaseClient dbClient,
     UsenetStreamingClient usenetClient,
-    ConfigManager configManager
+    ConfigManager configManager,
+    DavMetadataStorageService metadataStorageService
 ) : BaseStoreStreamFile(httpContext)
 {
     public DavItem DavItem => davRarFile;
@@ -22,6 +24,7 @@ public class DatabaseStoreRarFile(
     public override string UniqueKey => davRarFile.Id.ToString();
     public override long FileSize => davRarFile.FileSize!.Value;
     public override DateTime CreatedAt => davRarFile.CreatedAt;
+    private readonly DavMetadataStorageService _metadataStorageService = metadataStorageService;
 
     protected override async Task<Stream> GetStreamAsync(CancellationToken ct)
     {
@@ -32,9 +35,13 @@ public class DatabaseStoreRarFile(
         var id = davRarFile.Id;
         var rarFile = await dbClient.Ctx.RarFiles.Where(x => x.Id == id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (rarFile is null) throw new FileNotFoundException($"Could not find nzb file with id: {id}");
+        var rarParts = _metadataStorageService.ResolvePayload(
+            rarFile.MetadataStorageHash,
+            rarFile.RarParts,
+            () => Array.Empty<DavRarFile.RarPart>());
         return new DavMultipartFileStream
         (
-            rarFile.ToDavMultipartFileMeta().FileParts,
+            rarFile.ToDavMultipartFileMeta(rarParts).FileParts,
             usenetClient,
             configManager.GetArticleBufferSize()
         );
