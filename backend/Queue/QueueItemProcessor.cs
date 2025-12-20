@@ -347,6 +347,10 @@ public class QueueItemProcessor(
         dbClient.Ctx.QueueItems.Remove(queueItem);
         dbClient.Ctx.HistoryItems.Add(historyItem);
         await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+        // Minimal invasive hook: optionally share NZB + deobfuscated filenames with external cache.
+        // Controlled by env vars:
+        //   SHARE_NZB_WITH_CACHE (default=true) -> enable/disable feature
+        //   SHARE_NZB_CACHE_URL -> target POST endpoint (if missing, skip)
         if (error == null && mountFolder is not null)
         {
             var enabledRaw = Environment.GetEnvironmentVariable("SHARE_NZB_WITH_CACHE");
