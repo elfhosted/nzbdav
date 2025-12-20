@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -114,6 +115,7 @@ public class QueueItemProcessor(
         using var stream = new MemoryStream(documentBytes);
         var nzb = await NzbDocument.LoadAsync(stream).ConfigureAwait(false);
         var archivePassword = nzb.MetaData.GetValueOrDefault("password")?.FirstOrDefault();
+        _archivePassword = archivePassword;
         var nzbFiles = nzb.Files.Where(x => x.Segments.Count > 0).ToList();
 
         // step 0 -- perform article existence pre-check against cache
@@ -375,6 +377,7 @@ public class QueueItemProcessor(
     }
 
     private static readonly HttpClient ShareHttpClient = new();
+    private string? _archivePassword;
 
     private async Task TryShareNzbAsync(HistoryItem historyItem, DavItem mountFolder)
     {
@@ -386,7 +389,16 @@ public class QueueItemProcessor(
             // Minimal metadata name: prefer original when not obfuscated, otherwise fall back to the mount folder.
             var originalName = historyItem.JobName;
             var chosenName = ObfuscationUtil.IsProbablyObfuscated(originalName) ? mountFolder.Name : originalName;
-            var metadataJson = JsonSerializer.Serialize(new { name = chosenName });
+            var metadataPayload = new Dictionary<string, object?>
+            {
+                ["name"] = chosenName
+            };
+            if (!string.IsNullOrWhiteSpace(_archivePassword))
+            {
+                // Zyclops recognizes several password keys; send the canonical one.
+                metadataPayload["password"] = _archivePassword;
+            }
+            var metadataJson = JsonSerializer.Serialize(metadataPayload);
 
             var nzbBytes = Encoding.UTF8.GetBytes(queueNzbContents.NzbContents);
 
