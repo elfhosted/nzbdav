@@ -1,14 +1,15 @@
-﻿using System.Text;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Base;
 
 namespace NzbWebDAV.WebDav;
 
 public class DatabaseStoreQueueItem(
     QueueItem queueItem,
-    DavDatabaseClient dbClient
+    DavDatabaseClient dbClient,
+    NzbStorageService nzbStorageService
 ) : BaseStoreReadonlyItem
 {
     public override string Name => queueItem.FileName;
@@ -21,6 +22,6 @@ public class DatabaseStoreQueueItem(
         var id = queueItem.Id;
         var document = await dbClient.Ctx.QueueNzbContents.Where(x => x.Id == id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (document is null) throw new FileNotFoundException($"Could not find nzb document with id: {id}");
-        return new MemoryStream(Encoding.UTF8.GetBytes(document.NzbContents));
+        return await nzbStorageService.OpenReadableStreamAsync(document, ct).ConfigureAwait(false);
     }
 }

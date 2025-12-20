@@ -13,6 +13,7 @@ using NzbWebDAV.Extensions;
 using NzbWebDAV.Middlewares;
 using NzbWebDAV.Queue;
 using NzbWebDAV.Services;
+using NzbWebDAV.Tasks;
 using NzbWebDAV.Utils;
 using NzbWebDAV.WebDav;
 using NzbWebDAV.WebDav.Base;
@@ -49,12 +50,10 @@ class Program
             .WriteTo.Console(theme: AnsiConsoleTheme.Code)
             .CreateLogger();
 
-        // initialize database
-        await using var databaseContext = new DavDatabaseContext();
-
         // run database migration, if necessary.
         if (args.Contains("--db-migration"))
         {
+            await using var databaseContext = new DavDatabaseContext();
             var argIndex = args.ToList().IndexOf("--db-migration");
             var targetMigration = args.Length > argIndex + 1 ? args[argIndex + 1] : null;
             await databaseContext.Database.MigrateAsync(targetMigration, SigtermUtil.GetCancellationToken()).ConfigureAwait(false);
@@ -64,6 +63,7 @@ class Program
         // initialize the config-manager
         var configManager = new ConfigManager();
         await configManager.LoadConfig().ConfigureAwait(false);
+        var exportOptions = BuildExportOptions(args);
 
         // initialize websocket-manager
         var websocketManager = new WebsocketManager();
@@ -78,11 +78,14 @@ class Program
         builder.Services
             .AddWebdavBasicAuthentication(configManager)
             .AddSingleton(configManager)
+            .AddSingleton(exportOptions)
             .AddSingleton(websocketManager)
+            .AddSingleton<NzbStorageService>()
             .AddSingleton<UsenetStreamingClient>()
             .AddSingleton<QueueManager>()
             .AddSingleton<ArrMonitoringService>()
             .AddSingleton<HealthCheckService>()
+            .AddHostedService<ExportInlineNzbsHostedService>()
             .AddScoped<DavDatabaseContext>()
             .AddScoped<DavDatabaseClient>()
             .AddScoped<DatabaseStore>()
@@ -113,5 +116,41 @@ class Program
         app.UseNWebDav();
         app.Lifetime.ApplicationStopping.Register(SigtermUtil.Cancel);
         await app.RunAsync().ConfigureAwait(false);
+    }
+    private static string? GetOptionValue(IReadOnlyList<string> args, string option)
+    {
+        for (var i = 0; i < args.Count; i++)
+        {
+            if (!string.Equals(args[i], option, StringComparison.Ordinal)) continue;
+            return i + 1 < args.Count ? args[i + 1] : null;
+        }
+
+        return null;
+    }
+
+    private static int? TryParseIntOption(IReadOnlyList<string> args, string option)
+    {
+        var value = GetOptionValue(args, option);
+        if (value == null) return null;
+        return int.TryParse(value, out var parsed) ? parsed : null;
+    }
+
+    private static ExportInlineNzbsOptions BuildExportOptions(string[] args)
+    {
+        var enabled = args.Contains("--auto-export-inline-nzbs") || args.Contains("--export-inline-nzbs");
+        var batchSize = TryParseIntOption(args, "--export-batch-size")
+                        ?? TryParseIntOption(args, "--batch-size")
+                        ?? 100;
+        var delayMs = TryParseIntOption(args, "--export-delay-ms") ?? 500;
+        var reportPath = GetOptionValue(args, "--export-report-path")
+                         ?? GetOptionValue(args, "--report-path");
+
+        return new ExportInlineNzbsOptions
+        {
+            Enabled = enabled,
+            BatchSize = Math.Max(1, batchSize),
+            DelayBetweenBatches = TimeSpan.FromMilliseconds(Math.Max(0, delayMs)),
+            ReportPath = reportPath
+        };
     }
 }

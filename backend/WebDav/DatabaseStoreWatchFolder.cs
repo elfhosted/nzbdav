@@ -9,6 +9,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Queue;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Requests;
 using NzbWebDAV.Websocket;
 
@@ -21,7 +22,8 @@ public class DatabaseStoreWatchFolder(
     ConfigManager configManager,
     UsenetStreamingClient usenetClient,
     QueueManager queueManager,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    NzbStorageService nzbStorageService
 ) : DatabaseStoreCollection(
     davDirectory,
     httpContext,
@@ -29,7 +31,8 @@ public class DatabaseStoreWatchFolder(
     configManager,
     usenetClient,
     queueManager,
-    websocketManager
+    websocketManager,
+    nzbStorageService
 )
 {
     protected override async Task<IStoreItem?> GetItemAsync(GetItemRequest request)
@@ -38,20 +41,21 @@ public class DatabaseStoreWatchFolder(
             .Where(x => x.FileName == request.Name)
             .FirstOrDefaultAsync(request.CancellationToken).ConfigureAwait(false);
         if (queueItem is null) return null;
-        return new DatabaseStoreQueueItem(queueItem, dbClient);
+        return new DatabaseStoreQueueItem(queueItem, dbClient, queueNzbStorageService);
     }
 
     protected override async Task<IStoreItem[]> GetAllItemsAsync(CancellationToken cancellationToken)
     {
         return (await dbClient.GetQueueItems(null, 0, int.MaxValue, cancellationToken).ConfigureAwait(false))
-            .Select(x => new DatabaseStoreQueueItem(x, dbClient))
+            .Select(x => new DatabaseStoreQueueItem(x, dbClient, queueNzbStorageService))
             .Select(IStoreItem (x) => x)
             .ToArray();
     }
 
     protected override async Task<StoreItemResult> CreateItemAsync(CreateItemRequest request)
     {
-        var controller = new AddFileController(null!, dbClient, queueManager, configManager, websocketManager);
+        var controller = new AddFileController(
+            null!, dbClient, queueManager, configManager, websocketManager, queueNzbStorageService);
         using var streamReader = new StreamReader(request.Stream);
         var nzbFileContents = await streamReader.ReadToEndAsync(request.CancellationToken).ConfigureAwait(false);
         var addFileRequest = new AddFileRequest()
@@ -70,7 +74,8 @@ public class DatabaseStoreWatchFolder(
             .Entries<QueueItem>()
             .Select(x => x.Entity)
             .First(x => x.Id.ToString() == response.NzoIds[0]);
-        return new StoreItemResult(DavStatusCode.Created, new DatabaseStoreQueueItem(queueItem, dbClient));
+        return new StoreItemResult(DavStatusCode.Created,
+            new DatabaseStoreQueueItem(queueItem, dbClient, queueNzbStorageService));
     }
 
     protected override async Task<DavStatusCode> DeleteItemAsync(DeleteItemRequest request)

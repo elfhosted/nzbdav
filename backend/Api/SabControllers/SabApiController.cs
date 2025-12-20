@@ -13,6 +13,7 @@ using NzbWebDAV.Config;
 using NzbWebDAV.Database;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue;
+using NzbWebDAV.Services;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
 
@@ -24,7 +25,8 @@ public class SabApiController(
     DavDatabaseClient dbClient,
     ConfigManager configManager,
     QueueManager queueManager,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    NzbStorageService nzbStorageService
 ) : ControllerBase
 {
     [HttpGet]
@@ -77,10 +79,10 @@ public class SabApiController(
                     HttpContext, configManager);
             case "addfile":
                 return new AddFileController(
-                    HttpContext, dbClient, queueManager, configManager, websocketManager);
+                    HttpContext, dbClient, queueManager, configManager, websocketManager, nzbStorageService);
             case "addurl":
                 return new AddUrlController(
-                    HttpContext, dbClient, queueManager, configManager, websocketManager);
+                    HttpContext, dbClient, queueManager, configManager, websocketManager, nzbStorageService);
 
             case "queue" when HttpContext.GetQueryParam("name") == "delete":
                 return new RemoveFromQueueController(

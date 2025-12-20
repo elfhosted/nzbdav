@@ -230,6 +230,38 @@ volumes:
     external: true # -- IMPORTANT --
 ```
 
+## Filesystem-backed NZB storage
+
+By default, NZB payloads are stored inline in SQLite so a single `/config` mount is enough for persistence. If you would rather write the raw NZB files to a different volume (for easier dedupe or backups), enable filesystem-backed storage with either of the following environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `NZB_STORAGE_USE_FILESYSTEM=true` | Stores new NZB uploads as compressed `.nzb.gz` files on disk instead of in the database. Existing queue items keep their inline payloads so you can migrate gradually. |
+| `NZB_STORAGE_PATH=/path/to/nzbs` | Optional override for where those files are written. Defaults to `/config/.nzbs`, but this lets you mount a separate, larger volume if desired. |
+
+Each queued NZB is compressed (gzip) on write to minimize disk usage, and the database now keeps a pointer to the file instead of the entire XML payload. If you ever disable the flag, newly queued items fall back to the legacy inline behavior while previously exported NZBs remain accessible through their stored pointers.
+
+### Exporting existing inline NZBs
+
+If you already have a large backlog of inline NZBs in SQLite, you can stream them to the filesystem while the app keeps running by launching the backend with the `--auto-export-inline-nzbs` flag (alias: `--export-inline-nzbs`). The exporter runs as a background service inside the main process, pulling inline payloads in throttled batches, writing each payload via the filesystem storage service, and updating the database pointers without blocking queue or WebDAV operations.
+
+Example (from the repo root):
+
+```bash
+dotnet run --project backend/NzbWebDAV.csproj -- --auto-export-inline-nzbs --export-batch-size 50 --export-delay-ms 250 --export-report-path /config/export-inline-nzbs.json
+```
+
+Arguments:
+
+| Flag | Description |
+| --- | --- |
+| `--auto-export-inline-nzbs` | Enables the background exporter while the app is running. Alias: `--export-inline-nzbs`. |
+| `--export-batch-size <n>` | Optional batch size (default 100). Smaller batches minimize write contention. |
+| `--export-delay-ms <n>` | Optional delay between batches in milliseconds (default 500). Gives normal queue work time to acquire the write lock. |
+| `--export-report-path <path>` | Optional report destination. Defaults to `<app>/reports/export-inline-nzbs-<timestamp>.json`. |
+
+The exporter writes a JSON report with start/end timestamps, exported count, remaining inline rows, and per-item success/failure details (ID, job name, category, filesystem path, hash). Keep the report as proof of what moved before vacuuming the database.
+
 
 # More screenshots
 <img width="300" alt="onboarding" src="https://github.com/user-attachments/assets/4ca1bfed-3b98-4ff2-8108-59ed07a25591" />

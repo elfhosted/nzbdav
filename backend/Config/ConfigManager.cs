@@ -174,6 +174,20 @@ public class ConfigManager
         return (configValue != null ? bool.Parse(configValue) : defaultValue);
     }
 
+    public bool UseFilesystemNzbStorage()
+    {
+        var configValue = StringUtil.EmptyToNull(GetConfigValue("nzb.storage.use-filesystem"));
+        if (configValue != null) return bool.Parse(configValue);
+        var envValue = StringUtil.EmptyToNull(Environment.GetEnvironmentVariable("NZB_STORAGE_USE_FILESYSTEM"));
+        return envValue != null && bool.Parse(envValue);
+    }
+
+    public string GetNzbStoragePath()
+    {
+        return StringUtil.EmptyToNull(Environment.GetEnvironmentVariable("NZB_STORAGE_PATH"))
+               ?? "/config/.nzbs";
+    }
+
     public bool IsRepairJobEnabled()
     {
         var defaultValue = false;

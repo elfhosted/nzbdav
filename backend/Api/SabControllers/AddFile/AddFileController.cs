@@ -7,6 +7,7 @@ using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue;
+using NzbWebDAV.Services;
 using NzbWebDAV.Websocket;
 using Usenet.Nzb;
 
@@ -17,7 +18,8 @@ public class AddFileController(
     DavDatabaseClient dbClient,
     QueueManager queueManager,
     ConfigManager configManager,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    NzbStorageService nzbStorageService
 ) : SabApiController.BaseController(httpContext, configManager)
 {
     public async Task<AddFileResponse> AddFileAsync(AddFileRequest request)
@@ -42,14 +44,44 @@ public class AddFileController(
             PostProcessing = request.PostProcessing,
             PauseUntil = request.PauseUntil
         };
-        var queueNzbContents = new QueueNzbContents()
+        QueueNzbContents queueNzbContents;
+        if (configManager.UseFilesystemNzbStorage())
         {
-            Id = queueItem.Id,
-            NzbContents = nzbFileContents,
-        };
+            var stored = await nzbStorageService
+                .WriteAsync(queueItem.Id, nzbFileContents, request.CancellationToken)
+                .ConfigureAwait(false);
+            queueNzbContents = new QueueNzbContents
+            {
+                Id = queueItem.Id,
+                NzbContents = string.Empty,
+                ExternalPath = stored.RelativePath,
+                ExternalCompression = stored.Compression,
+                ExternalLengthBytes = stored.LengthBytes,
+                ExternalSha256 = stored.Sha256
+            };
+        }
+        else
+        {
+            queueNzbContents = new QueueNzbContents
+            {
+                Id = queueItem.Id,
+                NzbContents = nzbFileContents
+            };
+        }
         dbClient.Ctx.QueueItems.Add(queueItem);
         dbClient.Ctx.QueueNzbContents.Add(queueNzbContents);
-        await dbClient.Ctx.SaveChangesAsync(request.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            await dbClient.Ctx.SaveChangesAsync(request.CancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (queueNzbContents.HasExternalPayload)
+            {
+                await nzbStorageService.DeleteAsync(queueNzbContents, CancellationToken.None).ConfigureAwait(false);
+            }
+            throw;
+        }
         var message = GetQueueResponse.QueueSlot.FromQueueItem(queueItem).ToJson();
         _ = websocketManager.SendMessage(WebsocketTopic.QueueItemAdded, message);
 

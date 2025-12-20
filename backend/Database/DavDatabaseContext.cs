@@ -311,6 +311,18 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
             e.Property(i => i.NzbContents)
                 .IsRequired();
 
+            e.Property(i => i.ExternalPath)
+                .IsRequired(false);
+
+            e.Property(i => i.ExternalCompression)
+                .IsRequired(false);
+
+            e.Property(i => i.ExternalLengthBytes)
+                .IsRequired(false);
+
+            e.Property(i => i.ExternalSha256)
+                .IsRequired(false);
+
             e.HasOne(f => f.QueueItem)
                 .WithOne()
                 .HasForeignKey<QueueNzbContents>(f => f.Id)

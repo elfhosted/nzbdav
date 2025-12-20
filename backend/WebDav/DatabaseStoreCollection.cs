@@ -7,6 +7,7 @@ using NzbWebDAV.Database;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue;
+using NzbWebDAV.Services;
 using NzbWebDAV.WebDav.Base;
 using NzbWebDAV.WebDav.Requests;
 using NzbWebDAV.Websocket;
@@ -20,9 +21,11 @@ public class DatabaseStoreCollection(
     ConfigManager configManager,
     UsenetStreamingClient usenetClient,
     QueueManager queueManager,
-    WebsocketManager websocketManager
+    WebsocketManager websocketManager,
+    NzbStorageService nzbStorageService
 ) : BaseStoreReadonlyCollection
 {
+    protected readonly NzbStorageService queueNzbStorageService = nzbStorageService;
     public override string Name => davDirectory.Name;
     public override string UniqueKey => davDirectory.Id.ToString();
     public override DateTime CreatedAt => davDirectory.CreatedAt;
@@ -103,10 +106,12 @@ public class DatabaseStoreCollection(
                     davItem.Name, "", httpContext, dbClient, usenetClient, configManager),
             DavItem.ItemType.Directory when davItem.Id == DavItem.NzbFolder.Id =>
                 new DatabaseStoreWatchFolder(
-                    davItem, httpContext, dbClient, configManager, usenetClient, queueManager, websocketManager),
+                    davItem, httpContext, dbClient, configManager, usenetClient, queueManager, websocketManager,
+                    queueNzbStorageService),
             DavItem.ItemType.Directory =>
                 new DatabaseStoreCollection(
-                    davItem, httpContext, dbClient, configManager, usenetClient, queueManager, websocketManager),
+                    davItem, httpContext, dbClient, configManager, usenetClient, queueManager, websocketManager,
+                    queueNzbStorageService),
             DavItem.ItemType.SymlinkRoot =>
                 new DatabaseStoreSymlinkCollection(
                     davItem, dbClient, configManager),

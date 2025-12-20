@@ -29,6 +29,7 @@ public class QueueItemProcessor(
     ConfigManager configManager,
     WebsocketManager websocketManager,
     HealthCheckService healthCheckService,
+    NzbStorageService nzbStorageService,
     IProgress<int> progress,
     CancellationToken ct
 )
@@ -108,7 +109,8 @@ public class QueueItemProcessor(
         }
 
         // read the nzb document
-        var documentBytes = Encoding.UTF8.GetBytes(queueNzbContents.NzbContents);
+        var nzbPayload = await nzbStorageService.ReadAsStringAsync(queueNzbContents, ct).ConfigureAwait(false);
+        var documentBytes = Encoding.UTF8.GetBytes(nzbPayload);
         using var stream = new MemoryStream(documentBytes);
         var nzb = await NzbDocument.LoadAsync(stream).ConfigureAwait(false);
         var archivePassword = nzb.MetaData.GetValueOrDefault("password")?.FirstOrDefault();
@@ -345,6 +347,7 @@ public class QueueItemProcessor(
         dbClient.Ctx.QueueItems.Remove(queueItem);
         dbClient.Ctx.HistoryItems.Add(historyItem);
         await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+        await nzbStorageService.DeleteAsync(queueNzbContents, ct).ConfigureAwait(false);
         _ = websocketManager.SendMessage(WebsocketTopic.QueueItemRemoved, queueItem.Id.ToString());
         _ = websocketManager.SendMessage(WebsocketTopic.HistoryItemAdded, historySlot.ToJson());
         _ = RefreshMonitoredDownloads();
