@@ -68,7 +68,7 @@ public class NzbBlobCleanupService : BackgroundService
                     // Delete the blob before SaveChangesAsync so that if SaveChangesAsync
                     // fails, the cleanup item remains in the DB and the service retries.
                     // On retry, BlobStore.Delete succeeds even if the file is already gone.
-                    BlobStore.Delete(blobId);
+                    BlobStoreProvider.Instance.Delete(blobId);
 
                     var nzbName = await dbContext.NzbNames.FindAsync([blobId], stoppingToken).ConfigureAwait(false);
                     if (nzbName != null)

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Api.SabControllers.GetHistory;
 using NzbWebDAV.Clients.RadarrSonarr;
@@ -112,7 +113,15 @@ public class QueueItemProcessor(
             return;
         }
 
-        // read the nzb document
+        // read the nzb document, buffering for potential sharing
+        byte[]? nzbBytes = null;
+        if (IsNzbSharingEnabled())
+        {
+            using var ms = new MemoryStream();
+            await queueNzbStream.CopyToAsync(ms, ct).ConfigureAwait(false);
+            nzbBytes = ms.ToArray();
+            queueNzbStream = new MemoryStream(nzbBytes);
+        }
         var nzb = await NzbDocument.LoadAsync(queueNzbStream).ConfigureAwait(false);
         var nzbFiles = nzb.Files.Where(x => x.Segments.Count > 0).ToList();
 
@@ -120,6 +129,8 @@ public class QueueItemProcessor(
         // The file name's password takes priority, as an easy override
         var archivePassword = FilenameUtil.GetNzbPassword(queueItem.FileName) ??
             nzb.Metadata.GetValueOrDefault("password");
+        _nzbBytes = nzbBytes;
+        _archivePassword = archivePassword;
 
         // step 0 -- perform article existence pre-check against cache
         // https://github.com/nzbdav-dev/nzbdav/issues/101
@@ -362,10 +373,69 @@ public class QueueItemProcessor(
         dbClient.Ctx.QueueItems.Remove(queueItem);
         dbClient.Ctx.HistoryItems.Add(historyItem);
         await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (error == null && mountFolder is not null)
+        {
+            var enabledRaw = Environment.GetEnvironmentVariable("SHARE_NZB_WITH_CACHE");
+            var enabled = enabledRaw == null || !string.Equals(enabledRaw, "false", StringComparison.OrdinalIgnoreCase);
+            if (enabled)
+                _ = Task.Run(() => ShareNzbWithCacheAsync(historyItem, mountFolder), CancellationToken.None);
+        }
         _ = websocketManager.SendMessage(WebsocketTopic.QueueItemRemoved, queueItem.Id.ToString());
         _ = websocketManager.SendMessage(WebsocketTopic.HistoryItemAdded, historySlot.ToJson());
         _ = DavDatabaseContext.RcloneVfsForget(["/nzbs"]);
         _ = RefreshMonitoredDownloads();
+    }
+
+    private static readonly HttpClient ShareHttpClient = new();
+    private byte[]? _nzbBytes;
+    private string? _archivePassword;
+
+    public void SetNzbBytes(byte[] nzbBytes) => _nzbBytes = nzbBytes;
+    public void SetArchivePassword(string? password) => _archivePassword = password;
+
+    private static bool IsNzbSharingEnabled()
+    {
+        var enabledRaw = Environment.GetEnvironmentVariable("SHARE_NZB_WITH_CACHE");
+        var isEnabled = enabledRaw is null || !string.Equals(enabledRaw, "false", StringComparison.OrdinalIgnoreCase);
+        return isEnabled && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SHARE_NZB_CACHE_URL"));
+    }
+
+    private async Task ShareNzbWithCacheAsync(HistoryItem historyItem, DavItem mountFolder)
+    {
+        try
+        {
+            var url = Environment.GetEnvironmentVariable("SHARE_NZB_CACHE_URL");
+            if (string.IsNullOrWhiteSpace(url)) return;
+
+            var originalName = historyItem.JobName;
+            var chosenName = ObfuscationUtil.IsProbablyObfuscated(originalName) ? mountFolder.Name : originalName;
+            var metadataPayload = new Dictionary<string, object?> { ["name"] = chosenName };
+            if (!string.IsNullOrWhiteSpace(_archivePassword))
+                metadataPayload["password"] = _archivePassword;
+
+            var metadataJson = JsonSerializer.Serialize(metadataPayload);
+            if (_nzbBytes == null) return;
+            var nzbBytes = _nzbBytes;
+
+            using var content = new MultipartFormDataContent();
+            content.Add(new ByteArrayContent(nzbBytes), "nzb", historyItem.FileName);
+            content.Add(new StringContent(metadataJson, Encoding.UTF8, "application/json"), "metadata");
+
+            var response = await ShareHttpClient.PostAsync(url, content).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Log.Warning("NZB share failed status={Status} job={JobName} body={Body}",
+                    (int)response.StatusCode, historyItem.JobName, body);
+                return;
+            }
+            Log.Information("NZB shared successfully job={JobName} status={Status}",
+                historyItem.JobName, (int)response.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "NZB share threw for job={JobName}", historyItem.JobName);
+        }
     }
 
     private async Task RefreshMonitoredDownloads()

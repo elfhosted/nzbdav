@@ -68,6 +68,9 @@ class Program
             return;
         }
 
+        // initialize S3 blob store (if configured via env vars)
+        await BlobStoreProvider.InitializeAsync();
+
         // initialize the config-manager
         var configManager = new ConfigManager();
         await configManager.LoadConfig().ConfigureAwait(false);

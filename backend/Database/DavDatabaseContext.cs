@@ -509,11 +509,11 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
         {
             // save blobs to blob-store
             foreach (var blobNzbFile in BlobNzbFiles)
-                await BlobStore.WriteBlob(blobNzbFile.Id, blobNzbFile);
+                await BlobStoreProvider.Instance.WriteBlob(blobNzbFile.Id, blobNzbFile);
             foreach (var blobRarFile in BlobRarFiles)
-                await BlobStore.WriteBlob(blobRarFile.Id, blobRarFile);
+                await BlobStoreProvider.Instance.WriteBlob(blobRarFile.Id, blobRarFile);
             foreach (var blobMultipartFile in BlobMultipartFiles)
-                await BlobStore.WriteBlob(blobMultipartFile.Id, blobMultipartFile);
+                await BlobStoreProvider.Instance.WriteBlob(blobMultipartFile.Id, blobMultipartFile);
 
             // save db changes
             var addedOrRemovedDavItems = GetAddedOrRemovedDavItems();
@@ -532,11 +532,11 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
         {
             // on errors, remove any already-written blob files
             foreach (var blobNzbFile in BlobNzbFiles)
-                BlobStore.Delete(blobNzbFile.Id);
+                BlobStoreProvider.Instance.Delete(blobNzbFile.Id);
             foreach (var blobRarFile in BlobRarFiles)
-                BlobStore.Delete(blobRarFile.Id);
+                BlobStoreProvider.Instance.Delete(blobRarFile.Id);
             foreach (var blobMultipartFile in BlobMultipartFiles)
-                BlobStore.Delete(blobMultipartFile.Id);
+                BlobStoreProvider.Instance.Delete(blobMultipartFile.Id);
 
             // rethrow the exception
             throw;

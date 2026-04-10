@@ -147,6 +147,7 @@ public class MultiConnectionNntpClient(
         int retryCount = 1
     ) where T : UsenetResponse
     {
+        var initialRetryCount = retryCount;
         while (retryCount >= 0)
         {
             ConnectionLock<INntpClient>? connectionLock = null;
@@ -167,8 +168,10 @@ public class MultiConnectionNntpClient(
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
                 {
-                    Log.Debug(e, "Error getting connection-lock. Retrying with a new connection.");
+                    var backoffSeconds = Math.Pow(2, initialRetryCount - retryCount); // 2s, 4s, 8s...
+                    Log.Debug(e, "Error getting connection-lock. Retrying after {BackoffSeconds}s backoff.", backoffSeconds);
                     retryCount--;
+                    await Task.Delay(TimeSpan.FromSeconds(backoffSeconds), ct).ConfigureAwait(false);
                     continue;
                 }
 
@@ -201,8 +204,10 @@ public class MultiConnectionNntpClient(
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
                 {
-                    Log.Debug(e, $"Error executing nntp {name} command. Retrying with a new connection.");
+                    var backoffSeconds = Math.Pow(2, initialRetryCount - retryCount); // 2s, 4s, 8s...
+                    Log.Debug(e, "Error executing nntp {Name} command. Retrying after {BackoffSeconds}s backoff.", name, backoffSeconds);
                     retryCount--;
+                    await Task.Delay(TimeSpan.FromSeconds(backoffSeconds), ct).ConfigureAwait(false);
                     continue;
                 }
 

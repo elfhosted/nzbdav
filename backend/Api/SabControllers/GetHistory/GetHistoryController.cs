@@ -22,20 +22,16 @@ public class GetHistoryController(
         if (request.Category != null)
             query = query.Where(q => q.Category == request.Category);
 
-        // get total count
-        var totalCountPromise = query
-            .CountAsync(request.CancellationToken);
+        // get total count (must await sequentially — DbContext is not thread-safe)
+        var totalCount = await query
+            .CountAsync(request.CancellationToken).ConfigureAwait(false);
 
         // get history items
-        var historyItemsPromise = query
+        var historyItems = await query
             .OrderByDescending(q => q.CreatedAt)
             .Skip(request.Start)
             .Take(request.Limit)
-            .ToArrayAsync(request.CancellationToken);
-
-        // await results
-        var totalCount = await totalCountPromise.ConfigureAwait(false);
-        var historyItems = await historyItemsPromise.ConfigureAwait(false);
+            .ToArrayAsync(request.CancellationToken).ConfigureAwait(false);
 
         // get download folders
         var downloadFolderIds = historyItems.Select(x => x.DownloadDirId).ToHashSet();

@@ -83,9 +83,18 @@ public class HealthCheckService : BackgroundService
                 // OperationCanceledException is expected on sigterm
                 return;
             }
+            catch (Exception e) when (e is CouldNotConnectToUsenetException or CouldNotLoginToUsenetException
+                                       || e.InnerException is CouldNotConnectToUsenetException
+                                           or CouldNotLoginToUsenetException)
+            {
+                // Provider is down or credentials are bad — back off significantly to avoid
+                // burning CPU with repeated failed connection attempts.
+                Log.Warning(e, "Provider unreachable during health check, backing off 60s: {Message}", e.Message);
+                await Task.Delay(TimeSpan.FromSeconds(60), stoppingToken).ConfigureAwait(false);
+            }
             catch (Exception e)
             {
-                Log.Error(e, $"Unexpected error performing background health checks: {e.Message}");
+                Log.Error(e, "Unexpected error performing background health checks: {Message}", e.Message);
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
             }
         }

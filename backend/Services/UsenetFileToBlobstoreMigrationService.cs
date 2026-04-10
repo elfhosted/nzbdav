@@ -95,7 +95,7 @@ public class UsenetFileToBlobstoreMigrationService(WebsocketManager websocketMan
                 var davItem = await GetDavItem(getFileToMigrateId(fileToMigrate), dbContext, ct);
                 dbContext.Entry(fileToMigrate).State = EntityState.Detached;
                 setFileToMigrateNewId(fileToMigrate);
-                await BlobStore.WriteBlob(getFileToMigrateId(fileToMigrate), fileToMigrate);
+                await BlobStoreProvider.Instance.WriteBlob(getFileToMigrateId(fileToMigrate), fileToMigrate);
                 try
                 {
                     // database changes
@@ -107,7 +107,7 @@ public class UsenetFileToBlobstoreMigrationService(WebsocketManager websocketMan
                 }
                 catch
                 {
-                    BlobStore.Delete(getFileToMigrateId(fileToMigrate));
+                    BlobStoreProvider.Instance.Delete(getFileToMigrateId(fileToMigrate));
                     throw;
                 }
             }

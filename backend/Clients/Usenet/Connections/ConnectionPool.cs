@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Contexts;
+using NzbWebDAV.Exceptions;
 
 namespace NzbWebDAV.Clients.Usenet.Connections;
 
@@ -42,6 +43,15 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
 
     private int _live; // number of connections currently alive
     private int _disposed; // 0 == false, 1 == true
+
+    /* ---- factory circuit breaker: stops all callers hammering a dead provider ---- */
+    private const int FactoryFailureThreshold = 1; // trip on first failure; higher-level retries handle transients
+    private static readonly TimeSpan FactoryCooldown = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AuthFailureCooldown = TimeSpan.FromMinutes(5); // bad credentials won't self-heal
+    private int _consecutiveFactoryFailures;
+    private long _lastFactoryFailureTickMs;
+    private Exception? _lastFactoryException;
+    private int _isAuthFailure; // 0 = no, 1 = yes (last failure was auth/credentials)
 
     /* ------------------------------------------------------------------------------ */
 
@@ -103,14 +113,41 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             TriggerConnectionPoolChangedEvent();
         }
 
+        // Circuit breaker: if factory has failed repeatedly, delay callers for the
+        // remaining cooldown period instead of hammering the provider and burning CPU.
+        var failures = Volatile.Read(ref _consecutiveFactoryFailures);
+        if (failures >= FactoryFailureThreshold)
+        {
+            var cooldown = Volatile.Read(ref _isAuthFailure) == 1 ? AuthFailureCooldown : FactoryCooldown;
+            var elapsed = Environment.TickCount64 - Volatile.Read(ref _lastFactoryFailureTickMs);
+            var remainingMs = (int)(cooldown.TotalMilliseconds - elapsed);
+            if (remainingMs > 0)
+            {
+                _gate.Release();
+                await Task.Delay(remainingMs, linked.Token).ConfigureAwait(false);
+                throw _lastFactoryException ?? new InvalidOperationException(
+                    $"Connection factory circuit breaker open ({failures} consecutive failures).");
+            }
+        }
+
         // Need a fresh connection.
         T conn;
         try
         {
             conn = await _factory(linked.Token).ConfigureAwait(false);
+            Volatile.Write(ref _consecutiveFactoryFailures, 0); // reset on success
+            Volatile.Write(ref _isAuthFailure, 0);
         }
-        catch
+        catch (Exception ex)
         {
+            _lastFactoryException = ex;
+            Interlocked.Increment(ref _consecutiveFactoryFailures);
+            Volatile.Write(ref _lastFactoryFailureTickMs, Environment.TickCount64);
+            var isBadCredentials = ex.Message.Contains("Invalid username or password",
+                                      StringComparison.OrdinalIgnoreCase) ||
+                                  ex.InnerException?.Message.Contains("Invalid username or password",
+                                      StringComparison.OrdinalIgnoreCase) == true;
+            Volatile.Write(ref _isAuthFailure, isBadCredentials ? 1 : 0);
             _gate.Release(); // free the permit on failure
             throw;
         }

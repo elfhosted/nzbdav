@@ -30,9 +30,13 @@ public class AddFileController(
     {
         var id = Guid.NewGuid();
 
-        // write the file to the blob-store
+        // buffer the NZB stream so we can write to blob-store AND compute segment bytes
+        // without a round-trip read (avoids S3/SQLite timing issues)
         await using var stream = request.NzbFileStream;
-        await BlobStore.WriteBlob(id, stream);
+        using var nzbBuffer = new MemoryStream();
+        await stream.CopyToAsync(nzbBuffer);
+        nzbBuffer.Position = 0;
+        await BlobStoreProvider.Instance.WriteBlob(id, (Stream)nzbBuffer);
 
         // save the queue item to the database
         QueueItem? queueItem;
@@ -44,13 +48,14 @@ public class AddFileController(
                 var backupLocation = configManager.GetNzbBackupLocation();
                 if (backupLocation != null)
                 {
-                    await BackupNzbAsync(id, request.FileName, request.Category, backupLocation);
+                    nzbBuffer.Position = 0;
+                    await BackupNzbAsync(nzbBuffer, request.FileName, request.Category, backupLocation);
                 }
             }
 
-            // compute the total segment bytes
-            await using var nzbFileStream = BlobStore.ReadBlob(id);
-            var totalSegmentBytes = ComputeTotalSegmentBytes(nzbFileStream);
+            // compute the total segment bytes from the buffered NZB
+            nzbBuffer.Position = 0;
+            var totalSegmentBytes = ComputeTotalSegmentBytes(nzbBuffer);
 
             // create the queue item record
             queueItem = new QueueItem
@@ -59,7 +64,7 @@ public class AddFileController(
                 CreatedAt = DateTime.Now,
                 FileName = request.FileName,
                 JobName = FilenameUtil.GetJobName(request.FileName),
-                NzbFileSize = nzbFileStream.Length,
+                NzbFileSize = nzbBuffer.Length,
                 TotalSegmentBytes = totalSegmentBytes,
                 Category = request.Category,
                 Priority = request.Priority,
@@ -84,7 +89,7 @@ public class AddFileController(
         {
             // in case of any errors writing to the database
             // delete the nzb file blob
-            BlobStore.Delete(id);
+            BlobStoreProvider.Instance.Delete(id);
             throw;
         }
 
@@ -109,7 +114,7 @@ public class AddFileController(
         return Ok(await AddFileAsync(request).ConfigureAwait(false));
     }
 
-    private static async Task BackupNzbAsync(Guid id, string fileName, string category, string backupLocation)
+    private static async Task BackupNzbAsync(Stream nzbStream, string fileName, string category, string backupLocation)
     {
         try
         {
@@ -132,9 +137,8 @@ public class AddFileController(
                 counter++;
             }
 
-            await using var src = BlobStore.ReadBlob(id);
             await using var dst = System.IO.File.Create(destPath);
-            await src.CopyToAsync(dst);
+            await nzbStream.CopyToAsync(dst);
         }
         catch (Exception e)
         {

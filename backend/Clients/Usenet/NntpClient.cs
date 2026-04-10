@@ -117,17 +117,40 @@ public abstract class NntpClient : INntpClient
         var token = childCt.Token;
 
         var tasks = segmentIds
-            .Select(async segmentId => (
-                SegmentId: segmentId,
-                Result: await StatAsync(segmentId, token).ConfigureAwait(false)
-            ))
+            .Select(async segmentId =>
+            {
+                try
+                {
+                    return (SegmentId: segmentId, Result: await StatAsync(segmentId, token).ConfigureAwait(false),
+                        Error: (Exception?)null);
+                }
+                catch (Exception e) when (!e.IsCancellationException())
+                {
+                    return (SegmentId: segmentId, Result: (UsenetStatResponse?)null, Error: e);
+                }
+            })
             .WithConcurrencyAsync(concurrency);
 
         var processed = 0;
         await foreach (var task in tasks.ConfigureAwait(false))
         {
             progress?.Report(++processed);
-            if (task.Result.ResponseType == UsenetResponseType.ArticleExists) continue;
+
+            // Connection/auth failure — cancel remaining checks immediately.
+            if (task.Error is CouldNotConnectToUsenetException or CouldNotLoginToUsenetException)
+            {
+                await childCt.CancelAsync().ConfigureAwait(false);
+                throw task.Error;
+            }
+
+            // Other errors — re-throw
+            if (task.Error != null)
+            {
+                await childCt.CancelAsync().ConfigureAwait(false);
+                throw task.Error;
+            }
+
+            if (task.Result!.ResponseType == UsenetResponseType.ArticleExists) continue;
             await childCt.CancelAsync().ConfigureAwait(false);
             throw new UsenetArticleNotFoundException(task.SegmentId);
         }

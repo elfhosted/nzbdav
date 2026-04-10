@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using NzbWebDAV.Database.Models;
+using Serilog;
 
 namespace NzbWebDAV.Database;
 
@@ -75,8 +76,13 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
         var blobId = davItem.FileBlobId;
         if (blobId.HasValue)
         {
-            var blob = await BlobStore.ReadBlob<DavNzbFile>(blobId.Value);
+            var blob = await BlobStoreProvider.Instance.ReadBlob<DavNzbFile>(blobId.Value);
             if (blob is not null) return blob;
+        }
+        else if (BlobStoreProvider.IsS3Configured)
+        {
+            // FileBlobId is null but S3 is configured — migration may not have run for this item
+            Log.Warning("S3: DavItem {DavItemId} has no FileBlobId; falling back to DB row lookup", davItem.Id);
         }
 
         // read from database
@@ -91,7 +97,7 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
         var blobId = davItem.FileBlobId;
         if (blobId.HasValue)
         {
-            var blob = await BlobStore.ReadBlob<DavRarFile>(blobId.Value);
+            var blob = await BlobStoreProvider.Instance.ReadBlob<DavRarFile>(blobId.Value);
             if (blob is not null) return blob;
         }
 
@@ -107,7 +113,7 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
         var blobId = davItem.FileBlobId;
         if (blobId.HasValue)
         {
-            var blob = await BlobStore.ReadBlob<DavMultipartFile>(blobId.Value);
+            var blob = await BlobStoreProvider.Instance.ReadBlob<DavMultipartFile>(blobId.Value);
             if (blob is not null) return blob;
         }
 
@@ -135,7 +141,7 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
 
         // attempt to read nzb contents from blob-store.
         var queueNzbStream = queueItem != null
-            ? BlobStore.ReadBlob(queueItem.Id)
+            ? BlobStoreProvider.Instance.ReadBlob(queueItem.Id)
             : null;
 
         // otherwise, read nzb contents from database.
@@ -208,9 +214,16 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
 
             var historyItems = results.Select(r => r.HistoryItem).ToList();
             var davItems = results.Where(r => r.DavItem != null).Select(r => r.DavItem!).ToList();
+            // Filter out items that already have a pending cleanup (concurrent remove race)
+            var existingCleanupIds = await Ctx.HistoryCleanupItems
+                .Where(c => historyItems.Select(h => h.Id).Contains(c.Id))
+                .Select(c => c.Id)
+                .ToListAsync(ct).ConfigureAwait(false);
+            var newCleanupItems = historyItems.Where(x => !existingCleanupIds.Contains(x.Id)).ToList();
+
             Ctx.Items.RemoveRange(davItems);
             Ctx.HistoryItems.RemoveRange(historyItems);
-            Ctx.HistoryCleanupItems.AddRange(historyItems.Select(x => new HistoryCleanupItem
+            Ctx.HistoryCleanupItems.AddRange(newCleanupItems.Select(x => new HistoryCleanupItem
             {
                 Id = x.Id,
                 DeleteMountedFiles = deleteFiles
@@ -218,8 +231,21 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
             return;
         }
 
-        Ctx.HistoryItems.RemoveRange(ids.Select(id => new HistoryItem() { Id = id }));
-        Ctx.HistoryCleanupItems.AddRange(ids.Select(x => new HistoryCleanupItem
+        // Filter to only history items that exist and don't already have pending cleanup
+        var existingItems = await Ctx.HistoryItems
+            .Where(x => ids.Contains(x.Id))
+            .Select(x => x.Id)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var alreadyQueued = await Ctx.HistoryCleanupItems
+            .Where(x => existingItems.Contains(x.Id))
+            .Select(x => x.Id)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var toCleanup = existingItems.Where(x => !alreadyQueued.Contains(x)).ToList();
+
+        if (existingItems.Count == 0) return;
+
+        Ctx.HistoryItems.RemoveRange(existingItems.Select(id => new HistoryItem() { Id = id }));
+        Ctx.HistoryCleanupItems.AddRange(toCleanup.Select(x => new HistoryCleanupItem
         {
             Id = x,
             DeleteMountedFiles = deleteFiles

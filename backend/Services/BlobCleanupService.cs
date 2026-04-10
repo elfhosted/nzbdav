@@ -33,7 +33,7 @@ public class BlobCleanupService : BackgroundService
                 }
 
                 // Delete the blob
-                BlobStore.Delete(cleanupItem.Id);
+                BlobStoreProvider.Instance.Delete(cleanupItem.Id);
 
                 // Remove the queue item from database
                 dbContext.BlobCleanupItems.Remove(cleanupItem);
