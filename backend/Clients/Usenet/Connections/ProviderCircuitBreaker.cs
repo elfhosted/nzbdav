@@ -26,6 +26,8 @@ public class ProviderCircuitBreaker
     private long _trippedUntilMs;
     private TimeSpan _currentCooldown = InitialCooldown;
 
+    public string ProviderName => _providerName;
+
     public ProviderCircuitBreaker(string providerName)
     {
         _providerName = providerName;

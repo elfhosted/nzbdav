@@ -29,6 +29,7 @@ public class MultiConnectionNntpClient(
 ) : NntpClient
 {
     public ProviderType ProviderType { get; } = type;
+    public string ProviderName => circuitBreaker.ProviderName;
     public bool IsTripped => circuitBreaker.IsTripped;
     public int LiveConnections => connectionPool.LiveConnections;
     public int IdleConnections => connectionPool.IdleConnections;
@@ -175,7 +176,8 @@ public class MultiConnectionNntpClient(
                     continue;
                 }
 
-                Log.Warning(e, "Error getting connection-lock.");
+                var innerMsg = e.InnerException?.Message ?? e.Message;
+                Log.Warning("Connection failed for {Provider}: {Error}", circuitBreaker.ProviderName, innerMsg);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
@@ -211,7 +213,8 @@ public class MultiConnectionNntpClient(
                     continue;
                 }
 
-                Log.Warning(e, $"Error executing nntp {name} command.");
+                var innerMsg = e.InnerException?.Message ?? e.Message;
+                Log.Warning("NNTP {Command} failed for {Provider}: {Error}", name, circuitBreaker.ProviderName, innerMsg);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }

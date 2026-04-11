@@ -132,12 +132,6 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
             var provider = orderedProviders[i];
             var isLastProvider = i == orderedProviders.Count - 1;
 
-            if (lastException is not null)
-            {
-                var msg = lastException.SourceException.Message;
-                Log.Debug($"Encountered error during NNTP Operation: `{msg}`. Trying another provider.");
-            }
-
             try
             {
                 var result = await task.Invoke(provider).ConfigureAwait(false);
@@ -150,11 +144,20 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
+                // Log a concise one-liner instead of letting the full stack trace propagate per-provider
+                var innerMsg = e.InnerException?.Message ?? e.Message;
+                Log.Warning("Provider {Provider} failed: {Error}", provider.ProviderName, innerMsg);
                 lastException = ExceptionDispatchInfo.Capture(e);
             }
         }
 
-        lastException?.Throw();
+        if (lastException != null)
+        {
+            Log.Warning("All {Count} providers failed. Last error: {Error}",
+                orderedProviders.Count, lastException.SourceException.Message);
+            lastException.Throw();
+        }
+
         throw new Exception("There are no usenet providers configured.");
     }
 
