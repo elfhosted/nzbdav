@@ -78,11 +78,8 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
         {
             var blob = await BlobStoreProvider.Instance.ReadBlob<DavNzbFile>(blobId.Value);
             if (blob is not null) return blob;
-        }
-        else if (BlobStoreProvider.IsS3Configured)
-        {
-            // FileBlobId is null but S3 is configured — migration may not have run for this item
-            Log.Warning("S3: DavItem {DavItemId} has no FileBlobId; falling back to DB row lookup", davItem.Id);
+            if (BlobStoreProvider.IsS3Configured)
+                Log.Warning("S3 blob missing for file \"{Name}\" (BlobId={BlobId}) — S3 mapping may have been lost", davItem.Name, blobId.Value);
         }
 
         // read from database
@@ -99,6 +96,8 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
         {
             var blob = await BlobStoreProvider.Instance.ReadBlob<DavRarFile>(blobId.Value);
             if (blob is not null) return blob;
+            if (BlobStoreProvider.IsS3Configured)
+                Log.Warning("S3 blob missing for file \"{Name}\" (BlobId={BlobId}) — S3 mapping may have been lost", davItem.Name, blobId.Value);
         }
 
         // read from database
@@ -115,6 +114,8 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
         {
             var blob = await BlobStoreProvider.Instance.ReadBlob<DavMultipartFile>(blobId.Value);
             if (blob is not null) return blob;
+            if (BlobStoreProvider.IsS3Configured)
+                Log.Warning("S3 blob missing for file \"{Name}\" (BlobId={BlobId}) — S3 mapping may have been lost", davItem.Name, blobId.Value);
         }
 
         // read from database

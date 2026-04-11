@@ -55,6 +55,7 @@ public class BlobKeyMappingDbContext : DbContext
         ");
 
         await MigrateBlobFormatKeysAsync();
+        await EnsureCollationAsync();
 
         var count = ctx.BlobKeyMappings.Count();
         Log.Warning("S3 blob store: {Count} BlobKeyMappings entries found at startup", count);
@@ -96,5 +97,42 @@ public class BlobKeyMappingDbContext : DbContext
             await updateCmd.ExecuteNonQueryAsync();
         }
         Log.Warning("Migrated {Count} BlobKeyMappings from BLOB to TEXT format", toMigrate.Count);
+    }
+
+    /// <summary>
+    /// Ensures the BlobKeyMappings PK uses COLLATE NOCASE. Old tables were created
+    /// without it, causing case-sensitive lookups to miss rows when Guid.ToString()
+    /// case doesn't match the stored format. Recreates the table if needed.
+    /// </summary>
+    private static async Task EnsureCollationAsync()
+    {
+        await using var conn = new SqliteConnection($"Data Source={DavDatabaseContext.DatabaseFilePath}");
+        await conn.OpenAsync();
+
+        // Check if the table already has COLLATE NOCASE
+        await using var checkCmd = conn.CreateCommand();
+        checkCmd.CommandText = "SELECT sql FROM sqlite_master WHERE name = 'BlobKeyMappings'";
+        var sql = (string?)await checkCmd.ExecuteScalarAsync();
+        if (sql != null && sql.Contains("COLLATE NOCASE", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        Log.Warning("Rebuilding BlobKeyMappings table with COLLATE NOCASE on primary key");
+        await using var tx = conn.BeginTransaction();
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = @"
+            CREATE TABLE IF NOT EXISTS BlobKeyMappings_new (
+                BlobId TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
+                Sha256Hash TEXT NOT NULL,
+                BlobType TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO BlobKeyMappings_new SELECT * FROM BlobKeyMappings;
+            DROP TABLE BlobKeyMappings;
+            ALTER TABLE BlobKeyMappings_new RENAME TO BlobKeyMappings;
+            CREATE INDEX IF NOT EXISTS IX_BlobKeyMappings_Sha256Hash ON BlobKeyMappings (Sha256Hash);
+        ";
+        await cmd.ExecuteNonQueryAsync();
+        await tx.CommitAsync();
+        Log.Warning("BlobKeyMappings table rebuilt with COLLATE NOCASE");
     }
 }

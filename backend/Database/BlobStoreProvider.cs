@@ -30,8 +30,24 @@ public static class BlobStoreProvider
         }
 
         await BlobKeyMappingDbContext.EnsureTableCreatedAsync();
-        Instance = new S3BlobStore(endpoint, bucket, accessKey, secretKey, region);
+        var s3Store = new S3BlobStore(endpoint, bucket, accessKey, secretKey, region);
+        Instance = s3Store;
         IsS3Configured = true;
         Log.Information("S3 blob store enabled: {Endpoint}/{Bucket}", endpoint, bucket);
+
+        // Repair orphaned blobs in the background — don't block startup
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // Small delay to let the app finish starting
+                await Task.Delay(TimeSpan.FromSeconds(10));
+                await s3Store.RepairOrphanedBlobsAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Background S3 repair failed");
+            }
+        });
     }
 }
