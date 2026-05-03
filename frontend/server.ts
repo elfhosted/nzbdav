@@ -31,6 +31,19 @@ app.use(
   }),
 );
 app.disable("x-powered-by");
+app.set("trust proxy", true);
+
+// Custom morgan token: raw TCP peer (ignores trust-proxy / X-Forwarded-For).
+morgan.token("socket-addr", (req) =>
+  (req as any).socket?.remoteAddress
+  ?? (req as any).connection?.remoteAddress
+  ?? "-"
+);
+// Custom morgan token: full X-Forwarded-For chain as received (no rewriting).
+morgan.token("xff", (req) => {
+  const v = req.headers["x-forwarded-for"];
+  return Array.isArray(v) ? v.join(",") : (v ?? "-");
+});
 
 // Initialize the websocket server as soon as both it and the server-module are ready
 let _serverModule: any = null;
@@ -73,12 +86,15 @@ if (DEVELOPMENT) {
     "/assets",
     express.static("build/client/assets", { immutable: true, maxAge: "1y" }),
   );
-  app.use(morgan("tiny", {
-    skip: (req, res) => {
-      return res.statusCode < 400
-        || req.url === "/favicon.ico"
+  app.use(morgan(
+    ':remote-addr (sock=:socket-addr xff=:xff) :method :url :status :res[content-length] - :response-time ms ":user-agent"',
+    {
+      skip: (req, res) => {
+        return res.statusCode < 400
+          || req.url === "/favicon.ico"
+      }
     }
-  }));
+  ));
   app.use(express.static("build/client", { maxAge: "1h" }));
   const serverModule = await import(BUILD_PATH);
   app.use(serverModule.app);

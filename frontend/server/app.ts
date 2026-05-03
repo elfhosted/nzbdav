@@ -19,6 +19,7 @@ export const initializeWebsocketServer = websocketServer.initialize;
 const forwardToBackend = createProxyMiddleware({
   target: process.env.BACKEND_URL,
   changeOrigin: true,
+  xfwd: true,
   on: {
     proxyRes: (proxyRes, req, res) => {
       proxyRes.on('close', () => {
