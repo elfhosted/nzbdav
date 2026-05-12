@@ -16,3 +16,11 @@ nuget
 
 .idea/
 .vscode/
+
+#######################
+# Local runtime state #
+#######################
+
+db.sqlite
+db.sqlite-shm
+db.sqlite-wal
