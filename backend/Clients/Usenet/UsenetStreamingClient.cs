@@ -41,7 +41,6 @@ public class UsenetStreamingClient : WrappingNntpClient
         var connectionPoolStats = new ConnectionPoolStats(providerConfig, websocketManager);
         var providerClients = providerConfig.Providers
             .Select((provider, index) => CreateProviderClient(
-                providerConfig,
                 provider,
                 connectionPoolStats.GetOnConnectionPoolChanged(index)
             ))
@@ -51,7 +50,6 @@ public class UsenetStreamingClient : WrappingNntpClient
 
     private static MultiConnectionNntpClient CreateProviderClient
     (
-        UsenetProviderConfig providerConfig,
         UsenetProviderConfig.ConnectionDetails connectionDetails,
         EventHandler<ConnectionPoolStats.ConnectionPoolChangedEventArgs> onConnectionPoolChanged
     )
@@ -62,7 +60,7 @@ public class UsenetStreamingClient : WrappingNntpClient
             onConnectionPoolChanged
         );
         var circuitBreaker = new ProviderCircuitBreaker(connectionDetails.Host);
-        return new MultiConnectionNntpClient(connectionPool, providerConfig.GetEffectiveType(connectionDetails), circuitBreaker);
+        return new MultiConnectionNntpClient(connectionPool, connectionDetails.Type, circuitBreaker);
     }
 
     private static ConnectionPool<INntpClient> CreateNewConnectionPool

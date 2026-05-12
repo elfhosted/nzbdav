@@ -44,19 +44,6 @@ const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
     [ProviderType.BackupOnly]: "Backup Only",
 };
 
-const ELFHOSTED_NEWS_HOST = "news.elfhosted.com";
-
-function getEffectiveType(provider: ConnectionDetails, allProviders: ConnectionDetails[]): ProviderType {
-    if (provider.Type === ProviderType.Disabled) return ProviderType.Disabled;
-    if (provider.Host.trim().toLowerCase() !== ELFHOSTED_NEWS_HOST) return provider.Type;
-    const hasOtherProviders = allProviders.some(p =>
-        p !== provider
-        && p.Type !== ProviderType.Disabled
-        && p.Host.trim().toLowerCase() !== ELFHOSTED_NEWS_HOST
-    );
-    return hasOtherProviders ? ProviderType.BackupOnly : provider.Type;
-}
-
 function parseProviderConfig(jsonString: string): UsenetProviderConfig {
     try {
         if (!jsonString || jsonString.trim() === "") {
@@ -272,7 +259,7 @@ export function UsenetSettings({ config, setNewConfig }: UsenetSettingsProps) {
                                                 </div>
                                                 <div className={styles["provider-detail-content"]}>
                                                     <span className={styles["provider-detail-label"]}>Behavior</span>
-                                                    <span className={styles["provider-detail-value"]}>{PROVIDER_TYPE_LABELS[getEffectiveType(provider, providerConfig.Providers)]}</span>
+                                                    <span className={styles["provider-detail-value"]}>{PROVIDER_TYPE_LABELS[provider.Type]}</span>
                                                 </div>
                                             </div>
 

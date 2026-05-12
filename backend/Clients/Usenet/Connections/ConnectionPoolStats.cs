@@ -20,7 +20,7 @@ public class ConnectionPoolStats
         _live = new int[count];
         _idle = new int[count];
         _max = providerConfig.Providers
-            .Where(x => providerConfig.GetEffectiveType(x) == ProviderType.Pooled)
+            .Where(x => x.Type == ProviderType.Pooled)
             .Select(x => x.MaxConnections)
             .Sum();
 
@@ -34,7 +34,7 @@ public class ConnectionPoolStats
 
         void OnEvent(object? _, ConnectionPoolChangedEventArgs args)
         {
-            if (_providerConfig.GetEffectiveType(_providerConfig.Providers[providerIndex]) == ProviderType.Pooled)
+            if (_providerConfig.Providers[providerIndex].Type == ProviderType.Pooled)
             {
                 lock (this)
                 {
