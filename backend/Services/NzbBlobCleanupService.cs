@@ -63,13 +63,9 @@ public class NzbBlobCleanupService : BackgroundService
                     .AnyAsync(x => x.NzbBlobId == blobId, stoppingToken)
                     .ConfigureAwait(false);
 
-                if (!isReferencedByQueue && !isReferencedByHistory && !isReferencedByDavItems)
+                var shouldDeleteBlob = !isReferencedByQueue && !isReferencedByHistory && !isReferencedByDavItems;
+                if (shouldDeleteBlob)
                 {
-                    // Delete the blob before SaveChangesAsync so that if SaveChangesAsync
-                    // fails, the cleanup item remains in the DB and the service retries.
-                    // On retry, BlobStore.Delete succeeds even if the file is already gone.
-                    BlobStoreProvider.Instance.Delete(blobId);
-
                     var nzbName = await dbContext.NzbNames.FindAsync([blobId], stoppingToken).ConfigureAwait(false);
                     if (nzbName != null)
                         dbContext.NzbNames.Remove(nzbName);
@@ -79,6 +75,33 @@ public class NzbBlobCleanupService : BackgroundService
                 dbContext.NzbBlobCleanupItems.Remove(cleanupItem);
                 await dbContext.SaveChangesAsync(stoppingToken).ConfigureAwait(false);
                 await tx.CommitAsync(stoppingToken).ConfigureAwait(false);
+
+                // Delete the blob AFTER commit. Running it inside the BEGIN IMMEDIATE
+                // transaction deadlocks against S3BlobStore.Delete's own connection,
+                // which can't acquire the writer lock while the EF Core transaction holds it.
+                // If the post-commit delete throws (FilesystemBlobStore can throw IOException),
+                // re-queue the cleanup item so the next iteration retries.
+                if (shouldDeleteBlob)
+                {
+                    try
+                    {
+                        BlobStoreProvider.Instance.Delete(blobId);
+                    }
+                    catch (Exception deleteEx)
+                    {
+                        Log.Warning(deleteEx, "Blob delete failed post-commit for {BlobId}; re-queuing for retry", blobId);
+                        try
+                        {
+                            await using var retryCtx = new DavDatabaseContext();
+                            retryCtx.NzbBlobCleanupItems.Add(new Database.Models.NzbBlobCleanupItem { Id = blobId });
+                            await retryCtx.SaveChangesAsync(stoppingToken).ConfigureAwait(false);
+                        }
+                        catch (Exception requeueEx)
+                        {
+                            Log.Error(requeueEx, "Failed to re-queue {BlobId} after delete failure — blob is now orphaned", blobId);
+                        }
+                    }
+                }
 
                 // Continue immediately to next iteration to process more items
             }
