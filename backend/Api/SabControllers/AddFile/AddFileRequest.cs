@@ -23,9 +23,20 @@ public class AddFileRequest()
             context.Request.Form.Files["name"] ??
             throw new BadHttpRequestException("Invalid nzbFile/name param");
 
+        // Prefer the nzbname query param (set by some SAB clients); fall back to the
+        // form file's filename. Without this, file.FileName can be null and downstream
+        // Regex.Match(null) throws a 500.
+        var nzbName = context.GetRequestParam("nzbname");
+        var fileName = !string.IsNullOrWhiteSpace(nzbName)
+            ? (nzbName.EndsWith(".nzb", StringComparison.OrdinalIgnoreCase) ? nzbName : $"{nzbName}.nzb")
+            : file.FileName;
+
+        if (string.IsNullOrWhiteSpace(fileName))
+            throw new BadHttpRequestException("NZB filename could not be determined.");
+
         return new AddFileRequest()
         {
-            FileName = file.FileName,
+            FileName = fileName,
             ContentType = file.ContentType,
             NzbFileStream = file.OpenReadStream(),
             Category = context.GetRequestParam("cat") ?? configManager.GetManualUploadCategory(),
