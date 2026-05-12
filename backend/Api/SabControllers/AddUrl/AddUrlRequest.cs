@@ -90,7 +90,8 @@ public class AddUrlRequest() : AddFileRequest
         var httpClient = inReplayMode ? ReplayHttpClient : HttpClientInstance;
         httpClient.DefaultRequestHeaders.Remove("User-Agent");
         httpClient.DefaultRequestHeaders.Add("User-Agent", userAgent);
-        var response = await httpClient.GetAsync(WrapWithReplay(url));
+        var currentUrl = url;
+        var response = await httpClient.GetAsync(WrapWithReplay(currentUrl));
         var remainingRedirects = MaxAutomaticRedirections;
         // In replay mode we always iterate redirects manually so each hop
         // is re-wrapped through the proxy. Outside replay mode the original
@@ -104,8 +105,12 @@ public class AddUrlRequest() : AddFileRequest
         )
         {
             var redirect = response.Headers.Location;
-            var redirectUri = redirect.IsAbsoluteUri ? redirect : new Uri(new Uri(url), redirect);
-            response = await httpClient.GetAsync(WrapWithReplay(redirectUri.ToString()));
+            // Resolve relative Locations against the most recent hop, not
+            // the original URL, so chained redirects like /login -> /download
+            // land at the right place.
+            var redirectUri = redirect.IsAbsoluteUri ? redirect : new Uri(new Uri(currentUrl), redirect);
+            currentUrl = redirectUri.ToString();
+            response = await httpClient.GetAsync(WrapWithReplay(currentUrl));
             remainingRedirects--;
         }
 
