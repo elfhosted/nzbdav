@@ -14,6 +14,12 @@ public class AddUrlRequest() : AddFileRequest
     private static readonly string? SabReplayUrl =
         EnvironmentUtil.GetEnvironmentVariable("SAB_REPLAY_URL");
 
+    // When replaying through a SAB proxy, every hop MUST go through the
+    // proxy — otherwise a 3xx redirect that the proxy surfaces (rather
+    // than following internally) would be auto-followed by .NET directly
+    // to the indexer, leaking the request out of the proxy.
+    private static readonly HttpClient ReplayHttpClient = InitializeReplayHttpClient();
+
     public static async Task<AddUrlRequest> New(HttpContext context, ConfigManager configManager)
     {
         var nzbUrl = context.GetRequestParam("name");
@@ -80,17 +86,21 @@ public class AddUrlRequest() : AddFileRequest
 
     private static async Task<HttpResponseMessage> GetAsync(string url, string userAgent)
     {
-        var httpClient = HttpClientInstance;
+        var inReplayMode = !string.IsNullOrWhiteSpace(SabReplayUrl);
+        var httpClient = inReplayMode ? ReplayHttpClient : HttpClientInstance;
         httpClient.DefaultRequestHeaders.Remove("User-Agent");
         httpClient.DefaultRequestHeaders.Add("User-Agent", userAgent);
         var response = await httpClient.GetAsync(WrapWithReplay(url));
         var remainingRedirects = MaxAutomaticRedirections;
+        // In replay mode we always iterate redirects manually so each hop
+        // is re-wrapped through the proxy. Outside replay mode the original
+        // ALLOW_HTTPS_TO_HTTP_REDIRECTS env-gated behaviour applies.
         while
         (
             (int)response.StatusCode is >= 300 and < 400
             && remainingRedirects > 0
             && response.Headers.Location is not null
-            && EnvironmentUtil.IsVariableTrue("ALLOW_HTTPS_TO_HTTP_REDIRECTS")
+            && (inReplayMode || EnvironmentUtil.IsVariableTrue("ALLOW_HTTPS_TO_HTTP_REDIRECTS"))
         )
         {
             var redirect = response.Headers.Location;
@@ -114,6 +124,16 @@ public class AddUrlRequest() : AddFileRequest
         var handler = new HttpClientHandler
         {
             AllowAutoRedirect = true,
+            MaxAutomaticRedirections = MaxAutomaticRedirections,
+        };
+        return new HttpClient(handler);
+    }
+
+    private static HttpClient InitializeReplayHttpClient()
+    {
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
             MaxAutomaticRedirections = MaxAutomaticRedirections,
         };
         return new HttpClient(handler);

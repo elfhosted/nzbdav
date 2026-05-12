@@ -80,7 +80,14 @@ public class NzbBlobCleanupService : BackgroundService
                 // transaction deadlocks against S3BlobStore.Delete's own connection,
                 // which can't acquire the writer lock while the EF Core transaction holds it.
                 // If the post-commit delete throws (FilesystemBlobStore can throw IOException),
-                // re-queue the cleanup item so the next iteration retries.
+                // re-queue the cleanup item so the next iteration retries. The re-queue uses
+                // CancellationToken.None so it still completes if stoppingToken has fired
+                // during graceful shutdown.
+                // Caveat: a hard kill between CommitAsync and Delete leaves the blob orphaned
+                // (the cleanup item is gone, the delete never ran). Acceptable trade-off given
+                // the structural alternative would require redesigning the trigger that
+                // INSERT-OR-IGNOREs into NzbBlobCleanupItems, since the BEGIN IMMEDIATE
+                // serialisation is load-bearing for trigger-suppression correctness.
                 if (shouldDeleteBlob)
                 {
                     try
@@ -94,7 +101,7 @@ public class NzbBlobCleanupService : BackgroundService
                         {
                             await using var retryCtx = new DavDatabaseContext();
                             retryCtx.NzbBlobCleanupItems.Add(new Database.Models.NzbBlobCleanupItem { Id = blobId });
-                            await retryCtx.SaveChangesAsync(stoppingToken).ConfigureAwait(false);
+                            await retryCtx.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
                         }
                         catch (Exception requeueEx)
                         {
