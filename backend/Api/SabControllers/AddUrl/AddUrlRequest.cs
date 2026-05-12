@@ -11,6 +11,9 @@ public class AddUrlRequest() : AddFileRequest
     private static readonly HttpClient HttpClientInstance = InitializeHttpClient();
     private const int MaxAutomaticRedirections = 10;
 
+    private static readonly string? SabReplayUrl =
+        EnvironmentUtil.GetEnvironmentVariable("SAB_REPLAY_URL");
+
     public static async Task<AddUrlRequest> New(HttpContext context, ConfigManager configManager)
     {
         var nzbUrl = context.GetRequestParam("name");
@@ -80,7 +83,7 @@ public class AddUrlRequest() : AddFileRequest
         var httpClient = HttpClientInstance;
         httpClient.DefaultRequestHeaders.Remove("User-Agent");
         httpClient.DefaultRequestHeaders.Add("User-Agent", userAgent);
-        var response = await httpClient.GetAsync(url);
+        var response = await httpClient.GetAsync(WrapWithReplay(url));
         var remainingRedirects = MaxAutomaticRedirections;
         while
         (
@@ -92,11 +95,18 @@ public class AddUrlRequest() : AddFileRequest
         {
             var redirect = response.Headers.Location;
             var redirectUri = redirect.IsAbsoluteUri ? redirect : new Uri(new Uri(url), redirect);
-            response = await httpClient.GetAsync(redirectUri);
+            response = await httpClient.GetAsync(WrapWithReplay(redirectUri.ToString()));
             remainingRedirects--;
         }
 
         return response;
+    }
+
+    private static string WrapWithReplay(string url)
+    {
+        return string.IsNullOrWhiteSpace(SabReplayUrl)
+            ? url
+            : $"{SabReplayUrl.TrimEnd('/')}?url={Uri.EscapeDataString(url)}";
     }
 
     private static HttpClient InitializeHttpClient()
