@@ -226,7 +226,14 @@ public class ConfigManager
 
     public string GetImportStrategy()
     {
+        // Deployments can pin all users to symlinks regardless of stored config.
+        if (IsImportStrategyLockedToSymlinks()) return "symlinks";
         return GetConfigValue("api.import-strategy") ?? "symlinks";
+    }
+
+    public static bool IsImportStrategyLockedToSymlinks()
+    {
+        return EnvironmentUtil.IsVariableTrue("LOCK_IMPORT_STRATEGY_SYMLINKS");
     }
 
     public string GetStrmCompletedDownloadDir()

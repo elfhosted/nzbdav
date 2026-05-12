@@ -9,9 +9,10 @@ type SabnzbdSettingsProps = {
     config: Record<string, string>
     setNewConfig: Dispatch<SetStateAction<Record<string, string>>>
     appVersion: string,
+    lockImportStrategy?: boolean,
 };
 
-export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSettingsProps) {
+export function SabnzbdSettings({ config, setNewConfig, appVersion, lockImportStrategy }: SabnzbdSettingsProps) {
 
     const onRefreshApiKey = useCallback(() => {
         setNewConfig({ ...config, "api.key": generateNewApiKey() })
@@ -71,17 +72,34 @@ export function SabnzbdSettings({ config, setNewConfig, appVersion }: SabnzbdSet
             <hr />
             <Form.Group>
                 <Form.Label htmlFor="import-strategy-input">Import Strategy</Form.Label>
-                <Form.Select
-                    className={styles.input}
-                    value={config["api.import-strategy"]}
-                    onChange={e => setNewConfig({ ...config, "api.import-strategy": e.target.value })}
-                >
-                    <option value="symlinks">Symlinks — Plex</option>
-                    <option value="strm">STRM Files — Emby/Jellyfin</option>
-                </Form.Select>
-                <Form.Text id="import-strategy-help" muted>
-                    If you need to be able to stream from Plex, you will need to configure rclone and should select the `Symlinks` option here. If you only need to stream through Emby or Jellyfin, then you can skip rclone altogether and select the `STRM Files` option.
-                </Form.Text>
+                {lockImportStrategy ? (
+                    <>
+                        <Form.Control
+                            className={styles.input}
+                            id="import-strategy-input"
+                            type="text"
+                            value="Symlinks — Plex"
+                            readOnly
+                            disabled />
+                        <Form.Text muted>
+                            Import strategy is enforced to <strong>Symlinks</strong> on this deployment. STRM files are not supported here.
+                        </Form.Text>
+                    </>
+                ) : (
+                    <>
+                        <Form.Select
+                            className={styles.input}
+                            value={config["api.import-strategy"]}
+                            onChange={e => setNewConfig({ ...config, "api.import-strategy": e.target.value })}
+                        >
+                            <option value="symlinks">Symlinks — Plex</option>
+                            <option value="strm">STRM Files — Emby/Jellyfin</option>
+                        </Form.Select>
+                        <Form.Text id="import-strategy-help" muted>
+                            If you need to be able to stream from Plex, you will need to configure rclone and should select the `Symlinks` option here. If you only need to stream through Emby or Jellyfin, then you can skip rclone altogether and select the `STRM Files` option.
+                        </Form.Text>
+                    </>
+                )}
             </Form.Group>
             {/* <hr /> */}
             {config["api.import-strategy"] === 'symlinks' &&

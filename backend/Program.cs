@@ -81,6 +81,10 @@ class Program
         // initialize websocket-manager
         var websocketManager = new WebsocketManager();
 
+        // If the deployment enforces symlinks, rewrite any stored "strm" config
+        // to "symlinks" and convert existing .strm files in the background.
+        await EnforceSymlinkImportStrategyAsync(configManager, websocketManager).ConfigureAwait(false);
+
         // initialize webapp
         var builder = WebApplication.CreateBuilder(args);
         var maxRequestBodySize = EnvironmentUtil.GetLongVariable("MAX_REQUEST_BODY_SIZE") ?? 100 * 1024 * 1024;
@@ -162,6 +166,81 @@ class Program
             """
         );
         Environment.Exit(1);
+    }
+
+    /// <summary>
+    /// When LOCK_IMPORT_STRATEGY_SYMLINKS is set, run StrmToSymlinksTask
+    /// in the background on every startup, and rewrite the stored
+    /// api.import-strategy config to "symlinks" only AFTER conversion
+    /// completes — so partial failures get retried on the next startup
+    /// instead of being silently considered "already migrated".
+    /// ConfigManager.GetImportStrategy() also returns "symlinks"
+    /// unconditionally when locked, so runtime behaviour is correct
+    /// regardless of whether conversion has succeeded yet.
+    /// </summary>
+    private static Task EnforceSymlinkImportStrategyAsync(
+        ConfigManager configManager,
+        WebsocketManager websocketManager)
+    {
+        if (!ConfigManager.IsImportStrategyLockedToSymlinks()) return Task.CompletedTask;
+
+        Log.Information("LOCK_IMPORT_STRATEGY_SYMLINKS: scheduling StrmToSymlinksTask in background");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await using var taskDbContext = new DavDatabaseContext();
+                var dbClient = new DavDatabaseClient(taskDbContext);
+                var task = new Tasks.StrmToSymlinksTask(configManager, dbClient, websocketManager);
+                await task.Execute().ConfigureAwait(false);
+
+                // StrmToSymlinksTask swallows its own exceptions, so a non-throwing
+                // Execute() doesn't prove full success. Verify zero remaining .strm
+                // files in the library before claiming the migration is complete —
+                // anything else means we should retry on the next startup.
+                var remainingStrm = Utils.OrganizedLinksUtil
+                    .GetLibraryDavItemLinks(configManager)
+                    .Any(x => x.SymlinkOrStrmInfo is Utils.SymlinkAndStrmUtil.StrmInfo);
+                if (remainingStrm)
+                {
+                    Log.Warning("LOCK_IMPORT_STRATEGY_SYMLINKS: conversion left .strm files behind; will retry on next startup");
+                    return;
+                }
+
+                // Conversion fully complete. Persist the new strategy so the
+                // UI shows the correct "current" value. Idempotent.
+                await using var dbContext = new DavDatabaseContext();
+                var stored = await dbContext.ConfigItems
+                    .FirstOrDefaultAsync(x => x.ConfigName == "api.import-strategy")
+                    .ConfigureAwait(false);
+                if (stored == null)
+                {
+                    dbContext.ConfigItems.Add(new Database.Models.ConfigItem
+                    {
+                        ConfigName = "api.import-strategy",
+                        ConfigValue = "symlinks"
+                    });
+                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                }
+                else if (stored.ConfigValue != "symlinks")
+                {
+                    Log.Information("LOCK_IMPORT_STRATEGY_SYMLINKS: rewriting stored api.import-strategy '{Old}' -> 'symlinks' after successful conversion", stored.ConfigValue);
+                    stored.ConfigValue = "symlinks";
+                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                }
+                configManager.UpdateValues([new Database.Models.ConfigItem
+                {
+                    ConfigName = "api.import-strategy",
+                    ConfigValue = "symlinks"
+                }]);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "LOCK_IMPORT_STRATEGY_SYMLINKS: enforcement task failed; will retry on next startup");
+            }
+        });
+
+        return Task.CompletedTask;
     }
 
     private static async Task PerformDatabaseVacuumIfEnabled()

@@ -60,9 +60,19 @@ export async function loader({ request }: Route.LoaderArgs) {
         config[item.configName] = item.configValue;
     }
 
+    // When the deployment locks import-strategy to symlinks, hide the
+    // strm option in the UI. Belt-and-braces with the backend lock.
+    // Accept the same truthy values as EnvironmentUtil.IsVariableTrue.
+    const lockEnvRaw = (process.env.LOCK_IMPORT_STRATEGY_SYMLINKS ?? "").toLowerCase();
+    const lockImportStrategy = lockEnvRaw === "true" || lockEnvRaw === "yes" || lockEnvRaw === "y";
+    if (lockImportStrategy) {
+        config["api.import-strategy"] = "symlinks";
+    }
+
     return {
         config: config,
         appVersion: process.env.NZBDAV_VERSION ?? "unknown",
+        lockImportStrategy,
     }
 }
 
@@ -75,6 +85,7 @@ export default function Settings(props: Route.ComponentProps) {
 type BodyProps = {
     config: Record<string, string>,
     appVersion: string,
+    lockImportStrategy: boolean,
 };
 
 function Body(props: BodyProps) {
@@ -152,7 +163,7 @@ function Body(props: BodyProps) {
                     <UsenetSettings config={newConfig} setNewConfig={setNewConfig} />
                 </Tab>
                 <Tab eventKey="sabnzbd" title={sabnzbdTitle}>
-                    <SabnzbdSettings config={newConfig} setNewConfig={setNewConfig} appVersion={props.appVersion} />
+                    <SabnzbdSettings config={newConfig} setNewConfig={setNewConfig} appVersion={props.appVersion} lockImportStrategy={props.lockImportStrategy} />
                 </Tab>
                 <Tab eventKey="webdav" title={webdavTitle}>
                     <WebdavSettings config={newConfig} setNewConfig={setNewConfig} />
