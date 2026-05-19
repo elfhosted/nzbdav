@@ -1,5 +1,6 @@
 ﻿using System.Runtime.ExceptionServices;
 using NzbWebDAV.Clients.Usenet.Models;
+using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
 using Serilog;
@@ -118,14 +119,50 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
         }
     }
 
+    // Throttle the "all providers tripped" log so a request storm during an outage
+    // doesn't produce one Warning per request (Serilog formatting + console writes
+    // were observed to be a large fraction of CPU when the pod is failing).
+    private static long _allTrippedLastLogTickMs;
+    private const int AllTrippedLogIntervalMs = 30_000;
+
     private async Task<T> RunFromPoolWithBackup<T>
     (
         Func<INntpClient, Task<T>> task,
         CancellationToken cancellationToken
     ) where T : UsenetResponse
     {
-        ExceptionDispatchInfo? lastException = null;
         var orderedProviders = GetOrderedProviders();
+
+        // Fail-fast when no provider is currently usable. Without this we iterate
+        // every tripped provider and each call sits ~30s inside ConnectionPool's
+        // factory circuit breaker while holding a DownloadingNntpClient semaphore
+        // slot. Aggressive client retries (Stremio/Radarr/Sonarr/Jellyfin) then
+        // pile up behind those slots — threadpool, semaphore-waiter, exception,
+        // and websocket-event load grows until the pod stops answering /health
+        // and Kubernetes kills it. The ProviderCircuitBreaker cooldown already
+        // re-admits each provider on its own clock, so no "probe attempt" is
+        // needed here — the next request after a cooldown expires picks it up.
+        if (orderedProviders.Count == 0)
+        {
+            var enabledCount = providers.Count(x => x.ProviderType != ProviderType.Disabled);
+            if (enabledCount == 0)
+                throw new Exception("There are no usenet providers configured.");
+
+            var now = Environment.TickCount64;
+            var lastLog = Volatile.Read(ref _allTrippedLastLogTickMs);
+            if (now - lastLog >= AllTrippedLogIntervalMs &&
+                Interlocked.CompareExchange(ref _allTrippedLastLogTickMs, now, lastLog) == lastLog)
+            {
+                Log.Warning(
+                    "All {Count} usenet providers are in circuit-breaker cooldown; failing fast until one recovers.",
+                    enabledCount);
+            }
+
+            throw new CouldNotConnectToUsenetException(
+                $"All {enabledCount} usenet providers are in cooldown after recent failures.");
+        }
+
+        ExceptionDispatchInfo? lastException = null;
         for (var i = 0; i < orderedProviders.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -163,16 +200,16 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
 
     private List<MultiConnectionNntpClient> GetOrderedProviders()
     {
-        var enabled = providers
+        // Hard-skip tripped providers. Recovery is handled by ProviderCircuitBreaker's
+        // cooldown — when a tripped provider's IsTripped flips back to false, the next
+        // call to this method naturally includes it again, so there is no need to keep
+        // a tripped provider in the list for "probing".
+        return providers
             .Where(x => x.ProviderType != ProviderType.Disabled)
+            .Where(x => !x.IsTripped)
             .OrderBy(x => x.ProviderType)
             .ThenByDescending(x => x.AvailableConnections)
             .ToList();
-
-        var healthy = enabled.Where(x => !x.IsTripped).ToList();
-
-        // Always return at least one provider so cooldown probes can fire.
-        return healthy.Count > 0 ? healthy : enabled;
     }
 
     public override void Dispose()
