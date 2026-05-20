@@ -64,7 +64,16 @@ public class ProviderCircuitBreaker
 
             if (_consecutiveFailures < FailureThreshold) return;
 
-            _trippedUntilMs = Environment.TickCount64 + (long)_currentCooldown.TotalMilliseconds;
+            // Idempotent while open: an already-tripped breaker must not re-arm
+            // `_trippedUntilMs` (that would extend the trip window indefinitely
+            // and prevent recovery), must not double `_currentCooldown` again,
+            // and must not re-log on every failure. In-flight requests started
+            // before the trip will keep producing failures after the transition;
+            // those are expected and should be silently counted.
+            var now = Environment.TickCount64;
+            if (_trippedUntilMs != 0 && now < _trippedUntilMs) return;
+
+            _trippedUntilMs = now + (long)_currentCooldown.TotalMilliseconds;
             Log.Warning(
                 "Provider {Provider} tripped after {Failures} consecutive failures. " +
                 "Skipping for {Cooldown}s.",
