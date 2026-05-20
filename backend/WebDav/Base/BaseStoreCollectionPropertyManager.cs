@@ -13,7 +13,19 @@ internal class DavIsCollection<T> : DavString<T> where T : IStoreItem
 
 public class BaseStoreCollectionPropertyManager() : PropertyManager<BaseStoreCollection>(DavProperties)
 {
-    private static readonly XElement DavResourceType = new(WebDavNamespaces.DavNs + "collection");
+    // The resourcetype XElement MUST NOT be a shared static. XElement parent
+    // ownership in System.Xml.Linq is mutable: adding an XElement to a new
+    // parent automatically removes it from the previous parent. NWebDav's
+    // PropFindHandler builds an XDocument per request and parents this
+    // element into <resourcetype>. With concurrent PROPFINDs, one request's
+    // XDocument has its <collection/> element ripped out mid-serialization
+    // by another, and XmlWriter then tries to close more elements than it
+    // opened — throwing "Token EndElement in state EndRootElement" and
+    // returning a half-written 500 to the client. Clients (rclone, media
+    // servers) then retry, multiplying the per-request DB + property-read
+    // CPU cost. Clone per call to keep each XDocument independent.
+    private static XElement NewDavResourceType()
+        => new(WebDavNamespaces.DavNs + "collection");
 
     private static readonly DavProperty<BaseStoreCollection>[] DavProperties =
     [
@@ -23,7 +35,7 @@ public class BaseStoreCollectionPropertyManager() : PropertyManager<BaseStoreCol
         },
         new DavGetResourceType<BaseStoreCollection>
         {
-            Getter = _ => [DavResourceType]
+            Getter = _ => [NewDavResourceType()]
         },
         new DavGetLastModified<BaseStoreCollection>
         {
