@@ -11,13 +11,6 @@ namespace NzbWebDAV.Clients.Usenet;
 
 public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) : NntpClient
 {
-    // How long without ANY provider succeeding before we consider the system
-    // "effectively tripped" for short-circuit purposes, even if one provider's
-    // breaker hasn't yet armed. 10s catches cascading outages where a partly-
-    // working provider's intermittent successes would otherwise keep the
-    // time-since-success window indefinitely fresh.
-    private const int CascadeWindowMs = 10_000;
-
     // State-transition log throttling: we log once when AreAllProvidersTripped
     // first flips to true and once when it flips back to false. Stored as a
     // static so it survives provider list rebuilds on config change.
@@ -85,34 +78,29 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
         // Full outage: every enabled provider's breaker is open.
         if (trippedCount == enabledCount) return true;
 
-        // Majority-tripped: with 3+ providers, once a strict majority is
-        // tripped, the remaining "healthy" provider is almost certainly
-        // about to follow.
-        if (trippedCount > enabledCount / 2) return true;
-
-        // Universal-struggle fast path: at least one provider has fully
-        // tripped, AND every other provider has ConsecutiveFailures > 0
-        // (i.e. its last operation was a failure too — it just hasn't hit
-        // the 3-failure trip threshold yet). This is the actual outage
-        // window we want to short-circuit: in the user's log, the gap
-        // between the first trip (1/3) and the second trip (2/3) was ~100
-        // seconds and that's when the threadpool starves on per-request
-        // pipeline work for doomed requests. As soon as any provider that
-        // is NOT yet tripped lands a real success (and resets its
-        // ConsecutiveFailures to 0), strugglingCount drops below
-        // enabledCount and we release the cascade.
+        // Universal-struggle: at least one provider has fully tripped AND
+        // every enabled provider (including the not-yet-tripped ones) has
+        // ConsecutiveFailures > 0 — i.e. their last operation was a failure
+        // and they're on the path to tripping themselves. This is the
+        // actual outage window worth short-circuiting: between the first
+        // trip (1/N) and the second (2/N), the partially-working provider
+        // is failing every real request but hasn't hit the 3-failure trip
+        // threshold yet because some requests still succeed. As soon as a
+        // not-tripped provider lands a real success, its ConsecutiveFailures
+        // resets to 0 and the cascade releases automatically — so this
+        // condition CANNOT engage while any provider is genuinely working
+        // (an earlier majority-tripped fast path did engage in that case
+        // and was removed after codex review flagged it as turning partial
+        // outages into full ones).
         if (trippedCount > 0 && strugglingCount == enabledCount) return true;
 
-        // Time-based fallback: at least one provider is tripped AND no
-        // provider has demonstrated health recently anywhere in the
-        // process. Catches the case where the partially-working provider
-        // is silent (no recent failures or successes).
-        if (trippedCount > 0)
-        {
-            var sinceSuccess = Environment.TickCount64
-                - ProviderCircuitBreaker.AnyProviderLastSuccessTickMs;
-            if (sinceSuccess > CascadeWindowMs) return true;
-        }
+        // Don't apply a time-based fallback. A long idle period followed by
+        // a single tripped provider was previously enough to engage the
+        // cascade, which over-fires during low-traffic windows when the
+        // remaining providers haven't been exercised in a while. The
+        // universal-struggle check above is more precise: it requires
+        // evidence that the remaining providers are also currently failing,
+        // not just that the process hasn't seen NNTP success recently.
 
         return false;
     }

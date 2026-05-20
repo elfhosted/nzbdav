@@ -48,22 +48,6 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         // Determine if we are invoked as HEAD
         var isHeadRequest = request.Method == HttpMethods.Head;
 
-        // Short-circuit GETs when every NNTP provider is in circuit-breaker
-        // cooldown. Streaming clients (Plex/Jellyfin/Stremio) re-request at
-        // very high rate when they see HTTP 500, and the per-request work
-        // (DB lookup for the DavItem + related row, stream construction,
-        // exception unwinding, log line) adds up to threadpool-starvation
-        // territory during an outage. Returning 503 + Retry-After here
-        // skips all of that and signals well-behaved clients to back off.
-        // HEAD is left alone — it returns metadata only and doesn't need NNTP,
-        // so it's still useful for clients during an outage.
-        if (!isHeadRequest && _usenetClient.AreAllProvidersTripped)
-        {
-            response.Headers["Retry-After"] = "60";
-            response.SetStatus((DavStatusCode)503);
-            return true;
-        }
-
         // Determine the requested range
         var range = request.GetRange();
 
@@ -73,6 +57,25 @@ public class GetAndHeadHandlerPatch : IRequestHandler
         {
             // Set status to not found
             response.SetStatus(DavStatusCode.NotFound);
+            return true;
+        }
+
+        // Short-circuit GETs only for items whose body would come from NNTP
+        // (DatabaseStoreNzbFile / DatabaseStoreRarFile / DatabaseStoreMultipartFile,
+        // marked with IUsenetBackedStoreItem). Streaming clients hammer 500s
+        // into retry storms, so returning 503 + Retry-After here saves the
+        // per-request stream-construction + exception-unwind cost. Items
+        // that can still be served from the DB or filesystem during an
+        // outage — DatabaseStoreQueueItem, DatabaseStoreSymlinkFile,
+        // StaticEmbeddedFile, BaseStoreCollection (directory listings) —
+        // are explicitly NOT short-circuited; users need them to keep
+        // working. HEAD is also left alone since it returns metadata only.
+        if (!isHeadRequest
+            && entry is IUsenetBackedStoreItem
+            && _usenetClient.AreAllProvidersTripped)
+        {
+            response.Headers["Retry-After"] = "60";
+            response.SetStatus((DavStatusCode)503);
             return true;
         }
 
