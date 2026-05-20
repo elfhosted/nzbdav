@@ -13,48 +13,79 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
 {
     // How long without ANY provider succeeding before we consider the system
     // "effectively tripped" for short-circuit purposes, even if one provider's
-    // breaker hasn't yet armed. Tuned to match the shortest InitialCooldown
-    // (60s) — within that window, if no provider has demonstrated health, the
-    // remaining "healthy" provider is almost certainly about to trip too.
-    private const int CascadeWindowMs = 30_000;
+    // breaker hasn't yet armed. 10s catches cascading outages where a partly-
+    // working provider's intermittent successes would otherwise keep the
+    // time-since-success window indefinitely fresh.
+    private const int CascadeWindowMs = 10_000;
+
+    // State-transition log throttling: we log once when AreAllProvidersTripped
+    // first flips to true and once when it flips back to false. Stored as a
+    // static so it survives provider list rebuilds on config change.
+    private static int _lastCascadeState; // 0 = healthy, 1 = cascade engaged
 
     public override bool AreAllProvidersTripped
     {
         get
         {
-            // True only when at least one provider is enabled AND every enabled
-            // provider's circuit breaker is currently open. Used by the WebDAV
-            // GET handler and the queue processor to short-circuit per-request
-            // / per-item work during a full outage.
+            // Walk the providers once and collect every signal we need.
             var enabledCount = 0;
-            var anyTripped = false;
-            var allTripped = true;
+            var trippedCount = 0;
             foreach (var p in providers)
             {
                 if (p.ProviderType == ProviderType.Disabled) continue;
                 enabledCount++;
-                if (p.IsTripped) anyTripped = true;
-                else allTripped = false;
+                if (p.IsTripped) trippedCount++;
             }
             if (enabledCount == 0) return false;
-            if (allTripped) return true;
 
-            // Cascading-outage fast path: at least one provider is tripped AND
-            // no provider has recorded a successful operation in the last
-            // CascadeWindowMs. The remaining "healthy" provider just hasn't
-            // accumulated enough failures yet to flip its own breaker, but
-            // sending real WebDAV/queue work to it is futile — it's about to
-            // trip too, and in the meantime each request pays the full
-            // DB-lookup + stream-construction + exception-unwind cost.
-            if (anyTripped)
+            var engaged = ComputeEngaged(enabledCount, trippedCount);
+
+            // Log on transition so operators can see in production when the
+            // short-circuit kicks in / releases. Volatile flip via Interlocked
+            // so we don't log on every check during steady state.
+            var newState = engaged ? 1 : 0;
+            var prev = Interlocked.Exchange(ref _lastCascadeState, newState);
+            if (prev != newState)
             {
-                var sinceSuccess = Environment.TickCount64
-                    - ProviderCircuitBreaker.AnyProviderLastSuccessTickMs;
-                if (sinceSuccess > CascadeWindowMs) return true;
+                if (engaged)
+                    Log.Warning(
+                        "Usenet cascade engaged ({Tripped}/{Total} providers tripped); WebDAV GETs and queue processing will short-circuit until recovery.",
+                        trippedCount, enabledCount);
+                else
+                    Log.Information(
+                        "Usenet cascade released ({Tripped}/{Total} providers tripped); WebDAV GETs and queue processing resuming.",
+                        trippedCount, enabledCount);
             }
 
-            return false;
+            return engaged;
         }
+    }
+
+    private static bool ComputeEngaged(int enabledCount, int trippedCount)
+    {
+        // Full outage: every enabled provider's breaker is open.
+        if (trippedCount == enabledCount) return true;
+
+        // Majority-tripped fast path: with 3+ providers, once a strict majority
+        // is tripped, the remaining "healthy" provider is almost certainly
+        // about to follow — its breaker just hasn't accumulated enough
+        // consecutive failures yet because some requests still bleed through.
+        // Cascading short-circuit immediately stops feeding it doomed requests.
+        // (For deployments with only 1 or 2 providers, this collapses to the
+        // full-outage case — strict majority of 1 = 1, strict majority of 2 = 2.)
+        if (trippedCount > enabledCount / 2) return true;
+
+        // Time-based fallback: at least one provider is tripped AND no provider
+        // has demonstrated health recently. Covers the case where the
+        // partially-working provider is silent (no recent failures or successes).
+        if (trippedCount > 0)
+        {
+            var sinceSuccess = Environment.TickCount64
+                - ProviderCircuitBreaker.AnyProviderLastSuccessTickMs;
+            if (sinceSuccess > CascadeWindowMs) return true;
+        }
+
+        return false;
     }
 
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken ct)
