@@ -287,6 +287,7 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
             catch (Exception e) when (!e.IsCancellationException())
             {
                 var innerMsg = e.InnerException?.Message ?? e.Message;
+                var isArticleNotFound = e.TryGetCausingException(out UsenetArticleNotFoundException _);
                 // Demote to Debug when the breaker tripped during this call
                 // (the trip transition itself is already logged once by
                 // ProviderCircuitBreaker; per-request bounce-off logs are
@@ -296,6 +297,20 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
                 if (provider.IsTripped)
                 {
                     Log.Debug("Provider {Provider} skipped after mid-call trip: {Error}",
+                        provider.ProviderName, innerMsg);
+                }
+                else if (isArticleNotFound)
+                {
+                    // Article-not-found means the provider is healthy — we
+                    // successfully connected, authenticated, and queried —
+                    // it just doesn't carry this specific message-id (normal
+                    // for articles aged out of retention, par2 files, etc).
+                    // Don't log at Warning (it's not a provider problem) and
+                    // don't increment realFailures (the breaker would
+                    // mis-attribute retention gaps as outages). The caller
+                    // (CheckAllSegmentsAsync, FetchFirstSegmentsStep, etc.)
+                    // logs the missing article with its own file/context.
+                    Log.Debug("Provider {Provider} does not carry message-id: {Error}",
                         provider.ProviderName, innerMsg);
                 }
                 else
