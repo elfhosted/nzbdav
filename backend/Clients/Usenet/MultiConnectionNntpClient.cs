@@ -151,6 +151,15 @@ public class MultiConnectionNntpClient(
         var initialRetryCount = retryCount;
         while (retryCount >= 0)
         {
+            // Abort in-flight retries the moment the provider's circuit breaker
+            // trips. Without this, requests already past MultiProviderNntpClient's
+            // filter keep burning CPU on doomed TCP/TLS handshakes + 2s backoffs
+            // until their retry budget runs out, producing the burst of
+            // "Connection failed" / "Provider failed" logs that drowns the pod.
+            if (circuitBreaker.IsTripped)
+                throw new CouldNotConnectToUsenetException(
+                    $"Provider {circuitBreaker.ProviderName} circuit breaker is open; aborting in-flight retry.");
+
             ConnectionLock<INntpClient>? connectionLock = null;
             try
             {
