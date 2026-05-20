@@ -10,6 +10,25 @@ namespace NzbWebDAV.Clients.Usenet;
 
 public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) : NntpClient
 {
+    public override bool AreAllProvidersTripped
+    {
+        get
+        {
+            // True only when at least one provider is enabled AND every enabled
+            // provider's circuit breaker is currently open. Used by the WebDAV
+            // GET handler to short-circuit per-request DB + stream work during
+            // a full outage.
+            var enabledCount = 0;
+            foreach (var p in providers)
+            {
+                if (p.ProviderType == ProviderType.Disabled) continue;
+                enabledCount++;
+                if (!p.IsTripped) return false;
+            }
+            return enabledCount > 0;
+        }
+    }
+
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken ct)
     {
         throw new NotSupportedException("Please connect within the connectionFactory");

@@ -7,6 +7,8 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient
 {
     private INntpClient _usenetClient = usenetClient;
 
+    public override bool AreAllProvidersTripped => _usenetClient.AreAllProvidersTripped;
+
     public override Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken) =>
         _usenetClient.ConnectAsync(host, port, useSsl, cancellationToken);

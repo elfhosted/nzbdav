@@ -4,6 +4,7 @@ using NWebDav.Server.Handlers;
 using NWebDav.Server.Helpers;
 using NWebDav.Server.Props;
 using NWebDav.Server.Stores;
+using NzbWebDAV.Clients.Usenet;
 
 namespace NzbWebDAV.WebDav.Base;
 
@@ -20,12 +21,14 @@ namespace NzbWebDAV.WebDav.Base;
 public class GetAndHeadHandlerPatch : IRequestHandler
 {
     private readonly IStore _store;
+    private readonly UsenetStreamingClient _usenetClient;
 
-    public GetAndHeadHandlerPatch(IStore store)
+    public GetAndHeadHandlerPatch(IStore store, UsenetStreamingClient usenetClient)
     {
         _store = store;
+        _usenetClient = usenetClient;
     }
-    
+
     /// <summary>
     /// Handle a GET or HEAD request.
     /// </summary>
@@ -44,6 +47,22 @@ public class GetAndHeadHandlerPatch : IRequestHandler
 
         // Determine if we are invoked as HEAD
         var isHeadRequest = request.Method == HttpMethods.Head;
+
+        // Short-circuit GETs when every NNTP provider is in circuit-breaker
+        // cooldown. Streaming clients (Plex/Jellyfin/Stremio) re-request at
+        // very high rate when they see HTTP 500, and the per-request work
+        // (DB lookup for the DavItem + related row, stream construction,
+        // exception unwinding, log line) adds up to threadpool-starvation
+        // territory during an outage. Returning 503 + Retry-After here
+        // skips all of that and signals well-behaved clients to back off.
+        // HEAD is left alone — it returns metadata only and doesn't need NNTP,
+        // so it's still useful for clients during an outage.
+        if (!isHeadRequest && _usenetClient.AreAllProvidersTripped)
+        {
+            response.Headers["Retry-After"] = "60";
+            response.SetStatus((DavStatusCode)503);
+            return true;
+        }
 
         // Determine the requested range
         var range = request.GetRange();

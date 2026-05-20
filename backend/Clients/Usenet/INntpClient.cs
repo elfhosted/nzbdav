@@ -7,6 +7,11 @@ namespace NzbWebDAV.Clients.Usenet;
 
 public interface INntpClient : IDisposable
 {
+    // state inspection — used by request handlers to short-circuit work when
+    // streaming is known to be impossible (every configured NNTP provider is
+    // currently in circuit-breaker cooldown).
+    bool AreAllProvidersTripped { get; }
+
     // core methods
     Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken);

@@ -12,6 +12,10 @@ namespace NzbWebDAV.Clients.Usenet;
 /// </summary>
 public abstract class NntpClient : INntpClient
 {
+    // Default to "not tripped" — only MultiProviderNntpClient knows the
+    // real answer; everything else forwards via the wrapping chain.
+    public virtual bool AreAllProvidersTripped => false;
+
     public abstract Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken);
 
