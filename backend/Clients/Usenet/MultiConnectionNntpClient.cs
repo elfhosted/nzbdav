@@ -33,10 +33,28 @@ public class MultiConnectionNntpClient(
     public bool IsTripped => circuitBreaker.IsTripped;
     public int CooldownRemainingMs => circuitBreaker.CooldownRemainingMs;
     public int ConsecutiveFailures => circuitBreaker.ConsecutiveFailures;
+    public bool IsCurrentlyStruggling => circuitBreaker.IsTripped || circuitBreaker.ConsecutiveFailures > 0;
     public int LiveConnections => connectionPool.LiveConnections;
     public int IdleConnections => connectionPool.IdleConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;
     public int AvailableConnections => connectionPool.AvailableConnections;
+
+    // Per-provider log throttle so a burst of in-flight failures from the
+    // window before the breaker tripped doesn't drown the pod in Serilog
+    // formatting + console writes. One Warning per provider per 10s for the
+    // "Connection failed" / "NNTP X failed" lines is enough to know that
+    // failures occurred; the breaker state log already records the trip.
+    private long _lastConnectionFailedLogTickMs;
+    private long _lastCommandFailedLogTickMs;
+    private const int FailureLogIntervalMs = 10_000;
+
+    private bool TryAcquireFailureLogSlot(ref long lastTickMs)
+    {
+        var now = Environment.TickCount64;
+        var last = Volatile.Read(ref lastTickMs);
+        if (now - last < FailureLogIntervalMs) return false;
+        return Interlocked.CompareExchange(ref lastTickMs, now, last) == last;
+    }
 
     public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
     {
@@ -188,7 +206,10 @@ public class MultiConnectionNntpClient(
                 }
 
                 var innerMsg = e.InnerException?.Message ?? e.Message;
-                Log.Warning("Connection failed for {Provider}: {Error}", circuitBreaker.ProviderName, innerMsg);
+                if (TryAcquireFailureLogSlot(ref _lastConnectionFailedLogTickMs))
+                    Log.Warning("Connection failed for {Provider}: {Error}", circuitBreaker.ProviderName, innerMsg);
+                else
+                    Log.Debug("Connection failed for {Provider}: {Error} (log throttled)", circuitBreaker.ProviderName, innerMsg);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
@@ -225,7 +246,10 @@ public class MultiConnectionNntpClient(
                 }
 
                 var innerMsg = e.InnerException?.Message ?? e.Message;
-                Log.Warning("NNTP {Command} failed for {Provider}: {Error}", name, circuitBreaker.ProviderName, innerMsg);
+                if (TryAcquireFailureLogSlot(ref _lastCommandFailedLogTickMs))
+                    Log.Warning("NNTP {Command} failed for {Provider}: {Error}", name, circuitBreaker.ProviderName, innerMsg);
+                else
+                    Log.Debug("NNTP {Command} failed for {Provider}: {Error} (log throttled)", name, circuitBreaker.ProviderName, innerMsg);
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }

@@ -30,15 +30,17 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
             // Walk the providers once and collect every signal we need.
             var enabledCount = 0;
             var trippedCount = 0;
+            var strugglingCount = 0;
             foreach (var p in providers)
             {
                 if (p.ProviderType == ProviderType.Disabled) continue;
                 enabledCount++;
                 if (p.IsTripped) trippedCount++;
+                if (p.IsCurrentlyStruggling) strugglingCount++;
             }
             if (enabledCount == 0) return false;
 
-            var engaged = ComputeEngaged(enabledCount, trippedCount);
+            var engaged = ComputeEngaged(enabledCount, trippedCount, strugglingCount);
 
             // Log on transition so operators can see in production when the
             // short-circuit kicks in / releases. Volatile flip via Interlocked
@@ -78,23 +80,33 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
         return result;
     }
 
-    private static bool ComputeEngaged(int enabledCount, int trippedCount)
+    private static bool ComputeEngaged(int enabledCount, int trippedCount, int strugglingCount)
     {
         // Full outage: every enabled provider's breaker is open.
         if (trippedCount == enabledCount) return true;
 
-        // Majority-tripped fast path: with 3+ providers, once a strict majority
-        // is tripped, the remaining "healthy" provider is almost certainly
-        // about to follow — its breaker just hasn't accumulated enough
-        // consecutive failures yet because some requests still bleed through.
-        // Cascading short-circuit immediately stops feeding it doomed requests.
-        // (For deployments with only 1 or 2 providers, this collapses to the
-        // full-outage case — strict majority of 1 = 1, strict majority of 2 = 2.)
+        // Majority-tripped: with 3+ providers, once a strict majority is
+        // tripped, the remaining "healthy" provider is almost certainly
+        // about to follow.
         if (trippedCount > enabledCount / 2) return true;
 
-        // Time-based fallback: at least one provider is tripped AND no provider
-        // has demonstrated health recently. Covers the case where the
-        // partially-working provider is silent (no recent failures or successes).
+        // Universal-struggle fast path: at least one provider has fully
+        // tripped, AND every other provider has ConsecutiveFailures > 0
+        // (i.e. its last operation was a failure too — it just hasn't hit
+        // the 3-failure trip threshold yet). This is the actual outage
+        // window we want to short-circuit: in the user's log, the gap
+        // between the first trip (1/3) and the second trip (2/3) was ~100
+        // seconds and that's when the threadpool starves on per-request
+        // pipeline work for doomed requests. As soon as any provider that
+        // is NOT yet tripped lands a real success (and resets its
+        // ConsecutiveFailures to 0), strugglingCount drops below
+        // enabledCount and we release the cascade.
+        if (trippedCount > 0 && strugglingCount == enabledCount) return true;
+
+        // Time-based fallback: at least one provider is tripped AND no
+        // provider has demonstrated health recently anywhere in the
+        // process. Catches the case where the partially-working provider
+        // is silent (no recent failures or successes).
         if (trippedCount > 0)
         {
             var sinceSuccess = Environment.TickCount64
