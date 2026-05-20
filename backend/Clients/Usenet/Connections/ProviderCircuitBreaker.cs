@@ -19,6 +19,16 @@ public class ProviderCircuitBreaker
     private static readonly TimeSpan InitialCooldown = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan MaxCooldown = TimeSpan.FromMinutes(5);
 
+    // Shared "last successful NNTP operation" timestamp across all breakers.
+    // Used by MultiProviderNntpClient.AreAllProvidersTripped to detect the
+    // cascading-outage window — where one provider's cooldown has just expired
+    // (so it isn't technically tripped) but every other provider is tripped
+    // and nothing has succeeded recently, so any new request is doomed.
+    // Initialised to startup tick so a cold-start outage doesn't immediately
+    // trip the "stale" heuristic before the breakers have a chance to fire.
+    private static long _anyProviderLastSuccessTickMs = Environment.TickCount64;
+    public static long AnyProviderLastSuccessTickMs => Volatile.Read(ref _anyProviderLastSuccessTickMs);
+
     private readonly string _providerName;
     private readonly object _lock = new();
 
@@ -54,6 +64,10 @@ public class ProviderCircuitBreaker
             _trippedUntilMs = 0;
             _currentCooldown = InitialCooldown;
         }
+
+        // Update the cross-breaker shared timestamp so the WebDAV / queue
+        // short-circuit knows that *some* provider just demonstrated health.
+        Volatile.Write(ref _anyProviderLastSuccessTickMs, Environment.TickCount64);
     }
 
     public void RecordFailure()

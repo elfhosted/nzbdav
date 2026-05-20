@@ -81,6 +81,21 @@ public class QueueManager : IDisposable
         {
             try
             {
+                // Pause the queue while every NNTP provider is in circuit-breaker
+                // cooldown. Without this, each queue item runs FetchFirstSegmentsStep
+                // with concurrency=MaxDownloadConnections+5 (~35 concurrent NNTP
+                // attempts), all of which fail immediately — but the per-item cost
+                // (NZB XML parse + segment-lookup DB query + 30+ task allocations
+                // + exception unwinding) burns several hundred ms of CPU each, and
+                // with a queue backlog the manager hammers items at full speed,
+                // pegging CPU and starving the threadpool. Sleeping for 30s here
+                // is cheap and lets the breakers recover before we try again.
+                if (_usenetClient.AreAllProvidersTripped)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+                    continue;
+                }
+
                 // get the next queue-item from the database
                 await using var dbContext = new DavDatabaseContext();
                 var dbClient = new DavDatabaseClient(dbContext);
