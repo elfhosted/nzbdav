@@ -83,13 +83,24 @@ public class HealthCheckService : BackgroundService
                 // OperationCanceledException is expected on sigterm
                 return;
             }
+            catch (OperationCanceledException)
+            {
+                // Non-SIGTERM cancellation — typically a sibling segment task
+                // tripped the breaker, which cancelled this run's child CT
+                // (CheckAllSegmentsAsync.childCt.CancelAsync()). Sibling tasks
+                // sitting in ConnectionPool's factory-cooldown Task.Delay then
+                // throw OCE. This is expected during an outage, not an error.
+                // Back off briefly and let the next iteration's GetOrderedProviders
+                // / ProviderCircuitBreaker handle the recovery.
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
+            }
             catch (Exception e) when (e is CouldNotConnectToUsenetException or CouldNotLoginToUsenetException
                                        || e.InnerException is CouldNotConnectToUsenetException
                                            or CouldNotLoginToUsenetException)
             {
                 // Provider is down or credentials are bad — back off significantly to avoid
                 // burning CPU with repeated failed connection attempts.
-                Log.Warning(e, "Provider unreachable during health check, backing off 60s: {Message}", e.Message);
+                Log.Warning("Provider unreachable during health check, backing off 60s: {Message}", e.Message);
                 await Task.Delay(TimeSpan.FromSeconds(60), stoppingToken).ConfigureAwait(false);
             }
             catch (Exception e)

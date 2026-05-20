@@ -163,11 +163,20 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
         }
 
         ExceptionDispatchInfo? lastException = null;
+        var attempted = 0;
         for (var i = 0; i < orderedProviders.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var provider = orderedProviders[i];
             var isLastProvider = i == orderedProviders.Count - 1;
+
+            // Skip silently if the provider's circuit breaker tripped after
+            // GetOrderedProviders captured this list (another concurrent
+            // request may have tripped it just now). Without this, every
+            // in-flight request iterating a stale snapshot logs a Warning
+            // per provider — drowning the pod in noise during outages.
+            if (provider.IsTripped) continue;
+            attempted++;
 
             try
             {
@@ -181,19 +190,39 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
-                // Log a concise one-liner instead of letting the full stack trace propagate per-provider
                 var innerMsg = e.InnerException?.Message ?? e.Message;
-                Log.Warning("Provider {Provider} failed: {Error}", provider.ProviderName, innerMsg);
+                // Demote to Debug when the breaker tripped during this call
+                // (the trip transition itself is already logged once by
+                // ProviderCircuitBreaker; per-request bounce-off logs are
+                // pure noise).
+                if (provider.IsTripped)
+                    Log.Debug("Provider {Provider} skipped after mid-call trip: {Error}",
+                        provider.ProviderName, innerMsg);
+                else
+                    Log.Warning("Provider {Provider} failed: {Error}",
+                        provider.ProviderName, innerMsg);
                 lastException = ExceptionDispatchInfo.Capture(e);
             }
         }
 
         if (lastException != null)
         {
-            Log.Warning("All {Count} providers failed. Last error: {Error}",
-                orderedProviders.Count, lastException.SourceException.Message);
+            // Only emit the summary log if at least one provider attempt wasn't
+            // a silent mid-iteration trip-skip — otherwise this fires once per
+            // in-flight request during an outage and produces the same noise
+            // we just suppressed above.
+            if (attempted > 0)
+                Log.Warning("All {Count} providers failed. Last error: {Error}",
+                    orderedProviders.Count, lastException.SourceException.Message);
             lastException.Throw();
         }
+
+        // All providers were skipped (became tripped between GetOrderedProviders
+        // and the iteration reaching them). Throw the same fail-fast exception
+        // as the up-front check so callers see a consistent error during outages.
+        if (attempted == 0)
+            throw new CouldNotConnectToUsenetException(
+                "All usenet providers became tripped during request iteration.");
 
         throw new Exception("There are no usenet providers configured.");
     }
