@@ -12,6 +12,10 @@ public interface INntpClient : IDisposable
     // currently in circuit-breaker cooldown).
     bool AreAllProvidersTripped { get; }
 
+    // diagnostic snapshot — used by DiagnosticLoggerService. Default returns
+    // empty; only MultiProviderNntpClient produces a real list.
+    IReadOnlyList<ProviderDiagnostic> GetProviderDiagnostics();
+
     // core methods
     Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken);

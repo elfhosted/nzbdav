@@ -37,6 +37,23 @@ public class ProviderCircuitBreaker
     private TimeSpan _currentCooldown = InitialCooldown;
 
     public string ProviderName => _providerName;
+    public int ConsecutiveFailures => Volatile.Read(ref _consecutiveFailures);
+
+    /// <summary>
+    /// Milliseconds until the trip cooldown expires, or 0 if the breaker
+    /// is currently closed. Read-only diagnostic accessor — does not affect
+    /// trip state.
+    /// </summary>
+    public int CooldownRemainingMs
+    {
+        get
+        {
+            var trippedUntil = Volatile.Read(ref _trippedUntilMs);
+            if (trippedUntil == 0) return 0;
+            var remaining = trippedUntil - Environment.TickCount64;
+            return remaining > 0 ? (int)remaining : 0;
+        }
+    }
 
     public ProviderCircuitBreaker(string providerName)
     {

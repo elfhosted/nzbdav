@@ -31,6 +31,8 @@ public class MultiConnectionNntpClient(
     public ProviderType ProviderType { get; } = type;
     public string ProviderName => circuitBreaker.ProviderName;
     public bool IsTripped => circuitBreaker.IsTripped;
+    public int CooldownRemainingMs => circuitBreaker.CooldownRemainingMs;
+    public int ConsecutiveFailures => circuitBreaker.ConsecutiveFailures;
     public int LiveConnections => connectionPool.LiveConnections;
     public int IdleConnections => connectionPool.IdleConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;

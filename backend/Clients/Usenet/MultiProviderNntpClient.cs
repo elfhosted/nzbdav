@@ -61,6 +61,23 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
         }
     }
 
+    public override IReadOnlyList<ProviderDiagnostic> GetProviderDiagnostics()
+    {
+        var result = new List<ProviderDiagnostic>(providers.Count);
+        foreach (var p in providers)
+        {
+            if (p.ProviderType == ProviderType.Disabled) continue;
+            result.Add(new ProviderDiagnostic(
+                Name: p.ProviderName,
+                IsTripped: p.IsTripped,
+                CooldownRemainingMs: p.CooldownRemainingMs,
+                ConsecutiveFailures: p.ConsecutiveFailures,
+                LiveConnections: p.LiveConnections,
+                IdleConnections: p.IdleConnections));
+        }
+        return result;
+    }
+
     private static bool ComputeEngaged(int enabledCount, int trippedCount)
     {
         // Full outage: every enabled provider's breaker is open.

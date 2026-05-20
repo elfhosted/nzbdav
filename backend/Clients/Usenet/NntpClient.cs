@@ -16,6 +16,9 @@ public abstract class NntpClient : INntpClient
     // real answer; everything else forwards via the wrapping chain.
     public virtual bool AreAllProvidersTripped => false;
 
+    public virtual IReadOnlyList<ProviderDiagnostic> GetProviderDiagnostics()
+        => Array.Empty<ProviderDiagnostic>();
+
     public abstract Task ConnectAsync(
         string host, int port, bool useSsl, CancellationToken cancellationToken);
 
