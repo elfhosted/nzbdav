@@ -14,7 +14,7 @@ public class DatabaseStoreIdFile(
     DavDatabaseClient dbClient,
     UsenetStreamingClient usenetClient,
     ConfigManager configManager
-) : BaseStoreReadonlyItem
+) : BaseStoreReadonlyItem, IUsenetBackedStoreItem
 {
     public override string Name => davItem.Id.ToString();
     public override string UniqueKey => davItem.Id.ToString();
