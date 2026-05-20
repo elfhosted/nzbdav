@@ -47,6 +47,18 @@ class Program
             .MinimumLevel.Override("Microsoft.AspNetCore.Mvc", LogEventLevel.Warning)
             .MinimumLevel.Override("Microsoft.AspNetCore.Routing", LogEventLevel.Warning)
             .MinimumLevel.Override("Microsoft.AspNetCore.DataProtection", LogEventLevel.Error)
+            // Suppress NWebDav's per-property "raised an exception" Errors when
+            // the cause is client cancellation. When a WebDAV client disconnects
+            // mid-PROPFIND, PropFindHandler keeps iterating its property list
+            // and every remaining property's getter throws OperationCanceledException
+            // against the now-cancelled token. Each one logs an Error with a
+            // full stack trace — on a busy pod with frequent cancellations from
+            // Plex/Jellyfin/rclone, that's both log noise and meaningful CPU
+            // spent on stack-trace serialisation. Client-cancellation is not
+            // an error condition we need to alert on.
+            .Filter.ByExcluding(e =>
+                e.Exception is OperationCanceledException
+                && e.MessageTemplate.Text.StartsWith("Property "))
             .WriteTo.Console(theme: AnsiConsoleTheme.Code)
             .CreateLogger();
 
