@@ -63,7 +63,14 @@ public class QueueItemProcessor(
             {
                 Log.Error($"Failed to process job, `{queueItem.JobName}` -- {e.Message}");
                 dbClient.Ctx.ClearChangeTracker();
-                queueItem.PauseUntil = DateTime.Now.AddMinutes(1);
+                // Jittered PauseUntil to prevent thundering herd on outage recovery.
+                // Without jitter, a 7k+ item queue all gets PauseUntil = now+60s
+                // (because they all fail in the same outage window), which means
+                // 60s later QueueManager has to grind every one in turn — pegging
+                // a CPU core for ~6 minutes. Random extra 0-120s spreads the
+                // retry distribution across a 3-minute window.
+                var extraSeconds = Random.Shared.Next(0, 120);
+                queueItem.PauseUntil = DateTime.Now.AddMinutes(1).AddSeconds(extraSeconds);
                 dbClient.Ctx.QueueItems.Attach(queueItem);
                 dbClient.Ctx.Entry(queueItem).Property(x => x.PauseUntil).IsModified = true;
                 await dbClient.Ctx.SaveChangesAsync().ConfigureAwait(false);

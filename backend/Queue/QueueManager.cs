@@ -152,6 +152,16 @@ public class QueueManager : IDisposable
             finally
             {
                 await LockAsync(() => { _inProgressQueueItem = null; }).ConfigureAwait(false);
+
+                // Small per-item backoff to prevent thundering-herd CPU when a
+                // large queue (we've observed 7k+ items in production) all
+                // times out its PauseUntil window simultaneously after an NNTP
+                // outage and the QueueManager grinds them sequentially through
+                // fail-fast (~50ms each). 100ms is negligible against real
+                // download times but caps fail-fast throughput at ~10 items/sec
+                // and keeps a core free for inbound requests.
+                try { await Task.Delay(100, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { /* shutting down */ }
             }
         }
     }

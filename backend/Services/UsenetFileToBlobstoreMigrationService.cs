@@ -110,6 +110,13 @@ public class UsenetFileToBlobstoreMigrationService(WebsocketManager websocketMan
                     BlobStoreProvider.Instance.Delete(getFileToMigrateId(fileToMigrate));
                     throw;
                 }
+
+                // Throttle: each iteration MemoryPack-serializes + Zstd-compresses
+                // + SHA256-hashes + S3-PUTs a potentially multi-MB NzbFile. With
+                // a large unmigrated backlog this can sustain 100% of a CPU core
+                // for hours. 100ms cap keeps ~10 items/sec throughput while
+                // leaving headroom for the request path.
+                await Task.Delay(100, ct).ConfigureAwait(false);
             }
             catch (Exception e)
             {

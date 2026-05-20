@@ -110,7 +110,13 @@ public class NzbBlobCleanupService : BackgroundService
                     }
                 }
 
-                // Continue immediately to next iteration to process more items
+                // Throttle: cap sustained throughput at ~50 items/sec. Each
+                // iteration holds a SERIALIZABLE (BEGIN IMMEDIATE) transaction
+                // that blocks every other SQLite writer in the process — without
+                // a delay, a large backlog pins a CPU core AND continuously
+                // serializes writes from QueueItemProcessor / SAB controllers /
+                // anything else that touches the DB.
+                await Task.Delay(20, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (SigtermUtil.IsSigtermTriggered())
             {

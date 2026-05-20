@@ -39,7 +39,12 @@ public class BlobCleanupService : BackgroundService
                 dbContext.BlobCleanupItems.Remove(cleanupItem);
                 await dbContext.SaveChangesAsync(stoppingToken).ConfigureAwait(false);
 
-                // Continue immediately to next iteration to process more items
+                // Throttle: cap sustained throughput at ~50 items/sec so a
+                // large backlog doesn't peg a CPU core grinding through
+                // deletes + SaveChangesAsync round-trips. 20ms is invisible
+                // for normal-sized cleanup queues and keeps the threadpool
+                // responsive for inbound requests during outages.
+                await Task.Delay(20, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (SigtermUtil.IsSigtermTriggered())
             {
