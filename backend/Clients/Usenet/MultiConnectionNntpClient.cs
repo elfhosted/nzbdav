@@ -38,6 +38,8 @@ public class MultiConnectionNntpClient(
     public long TotalRecordedSuccesses => circuitBreaker.TotalRecordedSuccesses;
     public long TotalArticleNotFound => circuitBreaker.TotalArticleNotFound;
     public string? LastFailureReason => circuitBreaker.LastFailureReason;
+    public int AdaptiveMaxConnections => connectionPool.CurrentMaxConnections;
+    public int ConfiguredMaxConnections => connectionPool.ConfiguredMaxConnections;
     public int LiveConnections => connectionPool.LiveConnections;
     public int IdleConnections => connectionPool.IdleConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;

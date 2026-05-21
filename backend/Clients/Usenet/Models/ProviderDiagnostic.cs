@@ -15,4 +15,6 @@ public sealed record ProviderDiagnostic(
     long TotalRecordedFailures,
     long TotalRecordedSuccesses,
     long TotalArticleNotFound,
-    string? LastFailureReason);
+    string? LastFailureReason,
+    int AdaptiveMaxConnections,
+    int ConfiguredMaxConnections);

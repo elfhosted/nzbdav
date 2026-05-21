@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Exceptions;
+using Serilog;
 
 namespace NzbWebDAV.Clients.Usenet.Connections;
 
@@ -53,6 +54,23 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
     private Exception? _lastFactoryException;
     private int _isAuthFailure; // 0 = no, 1 = yes (last failure was auth/credentials)
 
+    /* ---- adaptive concurrency (AIMD: additive-increase, multiplicative-decrease) ----
+       Detects upstream connection-cap pressure by watching factory failures.
+       On every factory failure: halve _adaptiveMaxConnections (floor 1).
+       On every recovery interval with zero factory failures: grow by 1 (cap configured max).
+       The gate semaphore's max-allowed is kept in sync so new acquires are bounded
+       by the current adaptive cap, while in-flight connections drain naturally.
+       Disable with env var DISABLE_ADAPTIVE_POOL_SIZE=true. */
+    private static readonly bool AdaptiveDisabled = string.Equals(
+        Environment.GetEnvironmentVariable("DISABLE_ADAPTIVE_POOL_SIZE"),
+        "true", StringComparison.OrdinalIgnoreCase);
+    private static readonly TimeSpan AdaptiveRecoveryInterval = TimeSpan.FromSeconds(60);
+    private readonly int _configuredMaxConnections;
+    private int _adaptiveMaxConnections;
+    private long _lastAdaptiveAdjustTickMs;
+    public int CurrentMaxConnections => Volatile.Read(ref _adaptiveMaxConnections);
+    public int ConfiguredMaxConnections => _configuredMaxConnections;
+
     /* ------------------------------------------------------------------------------ */
 
     public ConnectionPool(
@@ -68,6 +86,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         IdleTimeout = idleTimeout ?? TimeSpan.FromSeconds(30);
 
         _maxConnections = maxConnections;
+        _configuredMaxConnections = maxConnections;
+        _adaptiveMaxConnections = maxConnections;
+        _lastAdaptiveAdjustTickMs = Environment.TickCount64;
         _gate = new PrioritizedSemaphore(maxConnections, maxConnections);
         _sweeperTask = Task.Run(SweepLoop); // background idle-reaper
     }
@@ -148,6 +169,9 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
                                   ex.InnerException?.Message.Contains("Invalid username or password",
                                       StringComparison.OrdinalIgnoreCase) == true;
             Volatile.Write(ref _isAuthFailure, isBadCredentials ? 1 : 0);
+            // Adaptive shrink: don't shrink on auth failures (config issue,
+            // not concurrency pressure — adding to the floor wouldn't help).
+            if (!isBadCredentials) AdaptiveOnFactoryFailure();
             _gate.Release(); // free the permit on failure
             throw;
         }
@@ -220,12 +244,67 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
         {
             using var timer = new PeriodicTimer(IdleTimeout / 2);
             while (await timer.WaitForNextTickAsync(_sweepCts.Token).ConfigureAwait(false))
+            {
                 SweepOnce();
+                AdaptiveTryGrow();
+            }
         }
         catch (OperationCanceledException)
         {
             /* normal on disposal */
         }
+    }
+
+    /* =================== adaptive concurrency ====================================== */
+
+    /// <summary>
+    /// Multiplicative-decrease: halve the runtime max-connections (floor 1) so
+    /// the pool stops issuing new factory calls above whatever the upstream is
+    /// happy to accept. Existing in-flight connections continue and drain
+    /// naturally as `_gate.UpdateMaxAllowed` only gates *new* waiters.
+    /// </summary>
+    private void AdaptiveOnFactoryFailure()
+    {
+        if (AdaptiveDisabled) return;
+        while (true)
+        {
+            var current = Volatile.Read(ref _adaptiveMaxConnections);
+            if (current <= 1) return;
+            var newMax = Math.Max(1, current / 2);
+            if (Interlocked.CompareExchange(ref _adaptiveMaxConnections, newMax, current) != current)
+                continue; // contended, retry
+            Volatile.Write(ref _lastAdaptiveAdjustTickMs, Environment.TickCount64);
+            _gate.UpdateMaxAllowed(newMax);
+            Log.Information(
+                "Connection pool adaptive: halved max-connections {Old}->{New} (configured={Configured}) after factory failure",
+                current, newMax, _configuredMaxConnections);
+            return;
+        }
+    }
+
+    /// <summary>
+    /// Additive-increase: if no adaptive adjustment has happened in the last
+    /// AdaptiveRecoveryInterval (and we're below the configured ceiling),
+    /// grow by 1. Called from the periodic sweep loop.
+    /// </summary>
+    private void AdaptiveTryGrow()
+    {
+        if (AdaptiveDisabled) return;
+        var current = Volatile.Read(ref _adaptiveMaxConnections);
+        if (current >= _configuredMaxConnections) return;
+
+        var now = Environment.TickCount64;
+        var lastAdjust = Volatile.Read(ref _lastAdaptiveAdjustTickMs);
+        if (now - lastAdjust < AdaptiveRecoveryInterval.TotalMilliseconds) return;
+
+        var newMax = current + 1;
+        if (Interlocked.CompareExchange(ref _adaptiveMaxConnections, newMax, current) != current)
+            return; // contended; we'll get another chance next sweep
+        Volatile.Write(ref _lastAdaptiveAdjustTickMs, now);
+        _gate.UpdateMaxAllowed(newMax);
+        Log.Debug(
+            "Connection pool adaptive: grew max-connections {Old}->{New} (configured={Configured}) after stable period",
+            current, newMax, _configuredMaxConnections);
     }
 
     private void SweepOnce()

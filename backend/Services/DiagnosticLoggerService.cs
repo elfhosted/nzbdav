@@ -109,6 +109,12 @@ public class DiagnosticLoggerService(UsenetStreamingClient usenetClient) : Backg
             providerSummary.Append("|f").Append(p.ConsecutiveFailures);
             providerSummary.Append("|c").Append(p.LiveConnections - p.IdleConnections)
                 .Append('/').Append(p.IdleConnections);
+            // Only print cap=X/Y when adaptive is below configured (i.e. we've
+            // shrunk in response to upstream pressure). When equal, omit to
+            // keep the line compact.
+            if (p.AdaptiveMaxConnections < p.ConfiguredMaxConnections)
+                providerSummary.Append("|cap=").Append(p.AdaptiveMaxConnections)
+                    .Append('/').Append(p.ConfiguredMaxConnections);
             providerSummary.Append("|lifetime[F=").Append(p.TotalRecordedFailures)
                 .Append(",S=").Append(p.TotalRecordedSuccesses)
                 .Append(",NA=").Append(p.TotalArticleNotFound).Append(']');

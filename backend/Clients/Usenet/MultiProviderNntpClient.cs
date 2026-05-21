@@ -72,7 +72,9 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
                 TotalRecordedFailures: p.TotalRecordedFailures,
                 TotalRecordedSuccesses: p.TotalRecordedSuccesses,
                 TotalArticleNotFound: p.TotalArticleNotFound,
-                LastFailureReason: p.LastFailureReason));
+                LastFailureReason: p.LastFailureReason,
+                AdaptiveMaxConnections: p.AdaptiveMaxConnections,
+                ConfiguredMaxConnections: p.ConfiguredMaxConnections));
         }
         return result;
     }
