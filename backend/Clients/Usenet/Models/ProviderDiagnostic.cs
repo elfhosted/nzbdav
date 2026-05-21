@@ -11,4 +11,8 @@ public sealed record ProviderDiagnostic(
     int CooldownRemainingMs,
     int ConsecutiveFailures,
     int LiveConnections,
-    int IdleConnections);
+    int IdleConnections,
+    long TotalRecordedFailures,
+    long TotalRecordedSuccesses,
+    long TotalArticleNotFound,
+    string? LastFailureReason);

@@ -34,6 +34,10 @@ public class MultiConnectionNntpClient(
     public int CooldownRemainingMs => circuitBreaker.CooldownRemainingMs;
     public int ConsecutiveFailures => circuitBreaker.ConsecutiveFailures;
     public bool IsCurrentlyStruggling => circuitBreaker.IsTripped || circuitBreaker.ConsecutiveFailures > 0;
+    public long TotalRecordedFailures => circuitBreaker.TotalRecordedFailures;
+    public long TotalRecordedSuccesses => circuitBreaker.TotalRecordedSuccesses;
+    public long TotalArticleNotFound => circuitBreaker.TotalArticleNotFound;
+    public string? LastFailureReason => circuitBreaker.LastFailureReason;
     public int LiveConnections => connectionPool.LiveConnections;
     public int IdleConnections => connectionPool.IdleConnections;
     public int ActiveConnections => connectionPool.ActiveConnections;
@@ -193,7 +197,8 @@ public class MultiConnectionNntpClient(
             }
             catch (Exception e)
             {
-                circuitBreaker.RecordFailure();
+                var innerMsg = e.InnerException?.Message ?? e.Message;
+                circuitBreaker.RecordFailure($"connect: {innerMsg}");
                 LogException(() => connectionLock?.Replace());
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
@@ -205,7 +210,6 @@ public class MultiConnectionNntpClient(
                     continue;
                 }
 
-                var innerMsg = e.InnerException?.Message ?? e.Message;
                 if (TryAcquireFailureLogSlot(ref _lastConnectionFailedLogTickMs))
                     Log.Warning("Connection failed for {Provider}: {Error}", circuitBreaker.ProviderName, innerMsg);
                 else
@@ -227,13 +231,18 @@ public class MultiConnectionNntpClient(
             }
             catch (Exception e) when (e.TryGetCausingException(out UsenetArticleNotFoundException _))
             {
+                // Article-not-found is a per-article fact, not a provider
+                // failure. Count it for diagnostics (lifetime counter) but
+                // don't increment the breaker.
+                circuitBreaker.RecordArticleNotFound();
                 LogException(() => connectionLock?.Dispose());
                 LogException(() => onConnectionReadyAgain?.Invoke(ArticleBodyResult.NotRetrieved));
                 throw;
             }
             catch (Exception e)
             {
-                circuitBreaker.RecordFailure();
+                var innerMsg = e.InnerException?.Message ?? e.Message;
+                circuitBreaker.RecordFailure($"{name}: {innerMsg}");
                 LogException(() => connectionLock?.Replace());
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
@@ -245,7 +254,6 @@ public class MultiConnectionNntpClient(
                     continue;
                 }
 
-                var innerMsg = e.InnerException?.Message ?? e.Message;
                 if (TryAcquireFailureLogSlot(ref _lastCommandFailedLogTickMs))
                     Log.Warning("NNTP {Command} failed for {Provider}: {Error}", name, circuitBreaker.ProviderName, innerMsg);
                 else

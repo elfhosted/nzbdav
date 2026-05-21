@@ -87,8 +87,13 @@ public class DiagnosticLoggerService(UsenetStreamingClient usenetClient) : Backg
         var gen1 = GC.CollectionCount(1);
         var gen2 = GC.CollectionCount(2);
 
-        // Compact per-provider summary: name=tripped(remainingSec)|consecutive|live/idle
-        // Example: news.elfhosted.com=tripped(45s)|f12|c3/1
+        // Compact per-provider summary. Format:
+        //   name=ok|tripped(<remainingS>s)|f<consecutiveFailures>|c<active>/<idle>
+        //        |lifetime[F=<recordedFailures>,S=<successes>,NA=<articleNotFound>]
+        //        |last="<lastFailureReason>"
+        // The lifetime breakdown distinguishes real provider failures (F)
+        // that COULD trip the breaker from article-not-found events (NA)
+        // that look similar in logs but cannot trip the breaker.
         var providerSummary = new StringBuilder();
         for (var i = 0; i < providers.Count; i++)
         {
@@ -104,6 +109,11 @@ public class DiagnosticLoggerService(UsenetStreamingClient usenetClient) : Backg
             providerSummary.Append("|f").Append(p.ConsecutiveFailures);
             providerSummary.Append("|c").Append(p.LiveConnections - p.IdleConnections)
                 .Append('/').Append(p.IdleConnections);
+            providerSummary.Append("|lifetime[F=").Append(p.TotalRecordedFailures)
+                .Append(",S=").Append(p.TotalRecordedSuccesses)
+                .Append(",NA=").Append(p.TotalArticleNotFound).Append(']');
+            if (!string.IsNullOrEmpty(p.LastFailureReason))
+                providerSummary.Append("|last=\"").Append(p.LastFailureReason).Append('"');
         }
 
         Log.Information(
