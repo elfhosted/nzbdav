@@ -22,6 +22,16 @@ public class QueueManager : IDisposable
     private CancellationTokenSource _sleepingQueueToken = new();
     private readonly Lock _sleepingQueueLock = new();
 
+    // Reserve threadpool headroom for non-queue work (SAB API polls, WebDAV,
+    // browser settings PUTs) by pausing the queue when pending tasks pile
+    // up. Override via env QUEUE_BACKPRESSURE_THRESHOLD. Default 100 is well
+    // above quiet-system baseline (~10-40 pending) and well below the
+    // runaway state (400-1000+) we've observed under saturation.
+    private static readonly int QueueBackpressureThreshold =
+        int.TryParse(Environment.GetEnvironmentVariable("QUEUE_BACKPRESSURE_THRESHOLD"), out var v) && v > 0
+            ? v
+            : 100;
+
     public QueueManager(
         UsenetStreamingClient usenetClient,
         ConfigManager configManager,
@@ -93,6 +103,33 @@ public class QueueManager : IDisposable
                 if (_usenetClient.AreAllProvidersTripped)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                // Yield to other work when the threadpool is congested. Each
+                // queue item that starts processing spawns up to
+                // GetQueueProcessingConcurrency() concurrent NNTP fetches plus
+                // their state-machine continuations, RAR/par2 parsers, DB
+                // transactions, etc. — easily 20-50 work items per queue
+                // item. Under sustained load (large queue + slow provider)
+                // the pool fills with these and the SAB API / WebDAV / UI
+                // settings endpoints can't get scheduled within their
+                // clients' own timeouts (Radarr/Sonarr HttpClient.Timeout =
+                // 100s, rclone vfs poll = ~10s, browser settings PUT =
+                // similar). Operators reported being unable to change
+                // settings to back off the queue while the system was
+                // overloaded *by* the queue.
+                //
+                // PendingWorkItemCount measures queued-but-not-yet-running
+                // tasks; threshold 100 is well above quiet-system baseline
+                // (~10-40 in normal operation per our diag snapshots) and
+                // well below the runaway state (400-1000+ observed when
+                // saturated). Sleep 500ms when over: long enough for the
+                // pool to drain a meaningful amount, short enough to resume
+                // the queue promptly when pressure eases.
+                if (ThreadPool.PendingWorkItemCount > QueueBackpressureThreshold)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
                     continue;
                 }
 
