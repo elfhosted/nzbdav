@@ -9,6 +9,26 @@ const BUILD_PATH = "../build/server/index.js";
 const DEVELOPMENT = process.env.NODE_ENV === "development";
 const PORT = Number.parseInt(process.env.PORT || "3000");
 
+// Keep the frontend alive when the backend is slow. The React Router SSR
+// loaders fetch from the backend at localhost:8080 with a 10s undici timeout;
+// when the backend is threadpool-starved, those fetches reject as
+// ConnectTimeoutError and — if a loader doesn't catch them — the rejection
+// propagates as an unhandledRejection, which Node escalates to an
+// uncaughtException-from-promise and terminates the process for by default
+// since v15. Logging-without-crashing keeps the rest of the frontend
+// serving (404 routes, /assets, websocket, healthcheck) while the SSR pages
+// just produce a 500 for the affected request. The alternative — the whole
+// pod container exiting and Kubernetes restart-looping — is much worse for
+// tenants.
+//
+// We deliberately don't hook uncaughtException: that fires for genuine
+// fatal errors (port-in-use, failed module import, programmer mistakes)
+// where the process is in an unknown state and Kubernetes restarting it is
+// the right answer.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
+
 // Initialize the express app
 const app = express();
 app.use(
