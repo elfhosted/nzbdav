@@ -60,29 +60,14 @@ public class GetAndHeadHandlerPatch : IRequestHandler
             return true;
         }
 
-        // Short-circuit GETs only for items whose body would come from NNTP
-        // (DatabaseStoreNzbFile / DatabaseStoreRarFile / DatabaseStoreMultipartFile,
-        // marked with IUsenetBackedStoreItem). Streaming clients hammer 500s
-        // into retry storms, so returning 503 + Retry-After here saves the
-        // per-request stream-construction + exception-unwind cost. Items
-        // that can still be served from the DB or filesystem during an
-        // outage — DatabaseStoreQueueItem, DatabaseStoreSymlinkFile,
-        // StaticEmbeddedFile, BaseStoreCollection (directory listings) —
-        // are explicitly NOT short-circuited; users need them to keep
-        // working. HEAD is also left alone since it returns metadata only.
-        if (!isHeadRequest
-            && entry is IUsenetBackedStoreItem
-            && _usenetClient.AreAllProvidersTripped)
-        {
-            response.Headers["Retry-After"] = "60";
-            response.SetStatus((DavStatusCode)503);
-            return true;
-        }
-
         // ETag might be used for a conditional request
         string? etag = null;
 
-        // Add non-expensive headers based on properties
+        // Add non-expensive headers based on properties. Done BEFORE the
+        // outage short-circuit below so that an If-None-Match-matching
+        // client can be answered with 304 Not Modified even while NNTP is
+        // unreachable — the 304 path doesn't need the body, so denying it
+        // with 503 would needlessly degrade cached-client availability.
         var propertyManager = entry.PropertyManager;
         if (propertyManager != null)
         {
@@ -105,6 +90,36 @@ public class GetAndHeadHandlerPatch : IRequestHandler
             var contentLanguage = (string?)await propertyManager.GetPropertyAsync(entry, DavGetContentLanguage<IStoreItem>.PropertyName, true, httpContext.RequestAborted).ConfigureAwait(false);
             if (contentLanguage != null)
                 response.Headers.ContentLanguage = contentLanguage;
+        }
+
+        // Conditional GET: if the client's cached ETag still matches, return
+        // 304 Not Modified without opening the body stream. Done before the
+        // outage short-circuit so a cached client gets a useful answer even
+        // when NNTP is down.
+        if (etag != null && request.Headers.IfNoneMatch == etag)
+        {
+            response.ContentLength = 0;
+            response.SetStatus(DavStatusCode.NotModified);
+            return true;
+        }
+
+        // Short-circuit GETs only for items whose body would come from NNTP
+        // (DatabaseStoreNzbFile / DatabaseStoreRarFile / DatabaseStoreMultipartFile,
+        // marked with IUsenetBackedStoreItem). Streaming clients hammer 500s
+        // into retry storms, so returning 503 + Retry-After here saves the
+        // per-request stream-construction + exception-unwind cost. Items
+        // that can still be served from the DB or filesystem during an
+        // outage — DatabaseStoreQueueItem, DatabaseStoreSymlinkFile,
+        // StaticEmbeddedFile, BaseStoreCollection (directory listings) —
+        // are explicitly NOT short-circuited; users need them to keep
+        // working. HEAD is also left alone since it returns metadata only.
+        if (!isHeadRequest
+            && entry is IUsenetBackedStoreItem
+            && _usenetClient.AreAllProvidersTripped)
+        {
+            response.Headers["Retry-After"] = "60";
+            response.SetStatus((DavStatusCode)503);
+            return true;
         }
 
         // Stream the actual entry
@@ -160,14 +175,6 @@ public class GetAndHeadHandlerPatch : IRequestHandler
                 catch (NotSupportedException)
                 {
                     // If the content length is not supported, then we just skip it
-                }
-
-                // Do not return the actual item data if ETag matches
-                if (etag != null && request.Headers.IfNoneMatch == etag)
-                {
-                    response.ContentLength = 0;
-                    response.SetStatus(DavStatusCode.NotModified);
-                    return true;
                 }
 
                 // HEAD method doesn't require the actual item data
