@@ -139,6 +139,29 @@ public class ConfigManager
         );
     }
 
+    /// <summary>
+    /// Per-queue-item processing fan-out (concurrent yEnc-decode / RAR-parse
+    /// tasks). Decoupled from MaxDownloadConnections because that knob is
+    /// sized to the provider's connection cap (often 30-50), while this one
+    /// must be sized to the *container's* CPU cap — on a 2-cpu K8s pod
+    /// running on an 88-core node, 35-way concurrent decode saturates the
+    /// cgroup quota and starves WebDAV streaming threads of CPU time, even
+    /// though connection-priority is correctly handed to streamers.
+    /// Streaming is far more user-visible than queue throughput, so default
+    /// to 4x effective CPUs (capped also at MaxDownloadConnections+5 so we
+    /// don't artificially exceed it on beefier hosts).
+    /// Override with env var QUEUE_PROCESSING_CONCURRENCY.
+    /// </summary>
+    public int GetQueueProcessingConcurrency()
+    {
+        var connectionsCap = GetMaxDownloadConnections() + 5;
+        var envOverride = EnvironmentUtil.GetEnvironmentVariable("QUEUE_PROCESSING_CONCURRENCY");
+        if (envOverride != null && int.TryParse(envOverride, out var fromEnv) && fromEnv > 0)
+            return Math.Min(fromEnv, connectionsCap);
+        var cpuBased = Math.Max(CpuLimitUtil.EffectiveCpuCount * 4, 4);
+        return Math.Min(cpuBased, connectionsCap);
+    }
+
     public int GetArticleBufferSize()
     {
         return int.Parse(

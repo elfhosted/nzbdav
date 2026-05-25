@@ -163,7 +163,7 @@ public class QueueItemProcessor(
             .ToMultiProgress(fileProcessors.Count);
         var fileProcessingResultsAll = await fileProcessors
             .Select(x => x!.ProcessAsync(part2Progress.SubProgress))
-            .WithConcurrencyAsync(configManager.GetMaxDownloadConnections() + 5)
+            .WithConcurrencyAsync(configManager.GetQueueProcessingConcurrency())
             .GetAllAsync(ct).ConfigureAwait(false);
         var fileProcessingResults = fileProcessingResultsAll
             .Where(x => x is not null)
