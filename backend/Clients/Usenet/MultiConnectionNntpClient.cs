@@ -200,7 +200,6 @@ public class MultiConnectionNntpClient(
             catch (Exception e)
             {
                 var innerMsg = e.InnerException?.Message ?? e.Message;
-                circuitBreaker.RecordFailure($"connect: {innerMsg}");
                 LogException(() => connectionLock?.Replace());
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
@@ -212,6 +211,13 @@ public class MultiConnectionNntpClient(
                     continue;
                 }
 
+                // Record the failure on the provider's breaker only AFTER
+                // retries are exhausted — internal retries exist for transient
+                // resilience, and double-counting (one breaker failure per
+                // internal attempt) trips the breaker at ~1.5 logical caller
+                // attempts instead of the FailureThreshold (3) the breaker
+                // was sized for.
+                circuitBreaker.RecordFailure($"connect: {innerMsg}");
                 if (TryAcquireFailureLogSlot(ref _lastConnectionFailedLogTickMs))
                     Log.Warning("Connection failed for {Provider}: {Error}", circuitBreaker.ProviderName, innerMsg);
                 else
@@ -244,7 +250,6 @@ public class MultiConnectionNntpClient(
             catch (Exception e)
             {
                 var innerMsg = e.InnerException?.Message ?? e.Message;
-                circuitBreaker.RecordFailure($"{name}: {innerMsg}");
                 LogException(() => connectionLock?.Replace());
                 LogException(() => connectionLock?.Dispose());
                 if (retryCount > 0)
@@ -256,6 +261,8 @@ public class MultiConnectionNntpClient(
                     continue;
                 }
 
+                // Record after retry exhaustion (see connect-path comment above).
+                circuitBreaker.RecordFailure($"{name}: {innerMsg}");
                 if (TryAcquireFailureLogSlot(ref _lastCommandFailedLogTickMs))
                     Log.Warning("NNTP {Command} failed for {Provider}: {Error}", name, circuitBreaker.ProviderName, innerMsg);
                 else
