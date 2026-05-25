@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -98,6 +99,56 @@ public class QueueItemProcessor(
         }
     }
 
+    // Phase logging: any phase taking longer than this threshold logs at
+    // Warning so it survives LOG_LEVEL=Warning in production. Below the
+    // threshold we log at Information so the line is filtered out in normal
+    // operation but still available when LOG_LEVEL=Information is set. This
+    // surfaces "which phase of which queue item is stuck" without flooding
+    // logs in the common case where everything is fast.
+    private static readonly TimeSpan SlowPhaseThreshold = TimeSpan.FromSeconds(30);
+
+    private async Task<T> LogPhaseAsync<T>(string phase, Func<Task<T>> action)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            var result = await action().ConfigureAwait(false);
+            LogPhaseComplete(phase, sw.Elapsed, faulted: false);
+            return result;
+        }
+        catch
+        {
+            LogPhaseComplete(phase, sw.Elapsed, faulted: true);
+            throw;
+        }
+    }
+
+    private async Task LogPhaseAsync(string phase, Func<Task> action)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            await action().ConfigureAwait(false);
+            LogPhaseComplete(phase, sw.Elapsed, faulted: false);
+        }
+        catch
+        {
+            LogPhaseComplete(phase, sw.Elapsed, faulted: true);
+            throw;
+        }
+    }
+
+    private void LogPhaseComplete(string phase, TimeSpan elapsed, bool faulted)
+    {
+        var level = elapsed >= SlowPhaseThreshold || faulted ? "warning" : "information";
+        if (level == "warning")
+            Log.Warning("Queue item `{Job}` phase `{Phase}` {Status} in {Elapsed}",
+                queueItem.JobName, phase, faulted ? "FAULTED" : "slow-completed", elapsed);
+        else
+            Log.Information("Queue item `{Job}` phase `{Phase}` completed in {Elapsed}",
+                queueItem.JobName, phase, elapsed);
+    }
+
     private async Task ProcessQueueItemAsync(DateTime startTime)
     {
         // if the `/blobs` folder is tampered with outside the nzbdav process,
@@ -148,10 +199,12 @@ public class QueueItemProcessor(
         var part1Progress = progress
             .Scale(50, 100)
             .ToPercentage(nzbFiles.Count);
-        var segments = await FetchFirstSegmentsStep.FetchFirstSegments(
-            nzbFiles, usenetClient, configManager, ct, part1Progress).ConfigureAwait(false);
-        var par2FileDescriptors = await GetPar2FileDescriptorsStep.GetPar2FileDescriptors(
-            segments, usenetClient, ct).ConfigureAwait(false);
+        var segments = await LogPhaseAsync("step1-fetch-first-segments",
+            () => FetchFirstSegmentsStep.FetchFirstSegments(
+                nzbFiles, usenetClient, configManager, ct, part1Progress)).ConfigureAwait(false);
+        var par2FileDescriptors = await LogPhaseAsync("step1-get-par2-descriptors",
+            () => GetPar2FileDescriptorsStep.GetPar2FileDescriptors(
+                segments, usenetClient, ct)).ConfigureAwait(false);
         var fileInfos = GetFileInfosStep.GetFileInfos(
             segments, par2FileDescriptors);
 
@@ -161,10 +214,11 @@ public class QueueItemProcessor(
             .Offset(50)
             .Scale(50, 100)
             .ToMultiProgress(fileProcessors.Count);
-        var fileProcessingResultsAll = await fileProcessors
-            .Select(x => x!.ProcessAsync(part2Progress.SubProgress))
-            .WithConcurrencyAsync(configManager.GetQueueProcessingConcurrency())
-            .GetAllAsync(ct).ConfigureAwait(false);
+        var fileProcessingResultsAll = await LogPhaseAsync("step2-file-processing",
+            () => fileProcessors
+                .Select(x => x!.ProcessAsync(part2Progress.SubProgress))
+                .WithConcurrencyAsync(configManager.GetQueueProcessingConcurrency())
+                .GetAllAsync(ct)).ConfigureAwait(false);
         var fileProcessingResults = fileProcessingResultsAll
             .Where(x => x is not null)
             .Select(x => x!)
@@ -185,37 +239,44 @@ public class QueueItemProcessor(
             var healthCheckConcurrency = configManager
                 .GetUsenetProviderConfig()
                 .TotalPooledConnections;
-            await usenetClient
-                .CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency, part3Progress, ct)
-                .ConfigureAwait(false);
+            await LogPhaseAsync("step3-full-health-check",
+                () => usenetClient.CheckAllSegmentsAsync(
+                    articlesToCheck, healthCheckConcurrency, part3Progress, ct)).ConfigureAwait(false);
             checkedFullHealth = true;
         }
 
-        // update the database
-        await MarkQueueItemCompleted(startTime, error: null, async () =>
+        // update the database — wrap the whole MarkQueueItemCompleted call so
+        // we can see if the aggregator/post-processor/SaveChangesAsync step is
+        // where things hang. Suspected as the most likely stall point for
+        // large NZBs (one big SQLite transaction holding the writer lock
+        // while every other writer in the process queues up).
+        await LogPhaseAsync("step4-mark-completed", async () =>
         {
-            var categoryFolder = await GetOrCreateCategoryFolder().ConfigureAwait(false);
-            var mountFolder = await CreateMountFolder(categoryFolder, existingMountFolder, duplicateNzbBehavior)
-                .ConfigureAwait(false);
-            new RarAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
-            new FileAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
-            new SevenZipAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
-            new MultipartMkvAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
-
-            // post-processing
-            new RenameDuplicatesPostProcessor(dbClient).RenameDuplicates();
-            new BlocklistedFilePostProcessor(configManager, dbClient).RemoveBlocklistedFiles();
-
-            // validate video files found
-            if (configManager.IsEnsureImportableVideoEnabled())
-                new EnsureImportableVideoValidator(dbClient).ThrowIfValidationFails();
-
-            // create strm files, if necessary
-            if (configManager.GetImportStrategy() == "strm")
-                await new CreateStrmFilesPostProcessor(configManager, dbClient).CreateStrmFilesAsync()
+            await MarkQueueItemCompleted(startTime, error: null, async () =>
+            {
+                var categoryFolder = await GetOrCreateCategoryFolder().ConfigureAwait(false);
+                var mountFolder = await CreateMountFolder(categoryFolder, existingMountFolder, duplicateNzbBehavior)
                     .ConfigureAwait(false);
+                new RarAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
+                new FileAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
+                new SevenZipAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
+                new MultipartMkvAggregator(dbClient, mountFolder, checkedFullHealth).UpdateDatabase(fileProcessingResults);
 
-            return mountFolder;
+                // post-processing
+                new RenameDuplicatesPostProcessor(dbClient).RenameDuplicates();
+                new BlocklistedFilePostProcessor(configManager, dbClient).RemoveBlocklistedFiles();
+
+                // validate video files found
+                if (configManager.IsEnsureImportableVideoEnabled())
+                    new EnsureImportableVideoValidator(dbClient).ThrowIfValidationFails();
+
+                // create strm files, if necessary
+                if (configManager.GetImportStrategy() == "strm")
+                    await new CreateStrmFilesPostProcessor(configManager, dbClient).CreateStrmFilesAsync()
+                        .ConfigureAwait(false);
+
+                return mountFolder;
+            }).ConfigureAwait(false);
         }).ConfigureAwait(false);
     }
 
