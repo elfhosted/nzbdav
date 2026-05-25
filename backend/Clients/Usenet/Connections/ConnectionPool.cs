@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using NzbWebDAV.Clients.Usenet.Concurrency;
 using NzbWebDAV.Clients.Usenet.Contexts;
 using NzbWebDAV.Exceptions;
+using NzbWebDAV.Extensions;
 using Serilog;
 
 namespace NzbWebDAV.Clients.Usenet.Connections;
@@ -159,8 +160,41 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             Volatile.Write(ref _consecutiveFactoryFailures, 0); // reset on success
             Volatile.Write(ref _isAuthFailure, 0);
         }
+        catch (Exception ex) when (ex.IsCancellationException())
+        {
+            // Cancellation is the caller's choice, not the provider's
+            // failure. If a single WebDAV client disconnects (HttpContext
+            // RequestAborted) or a queue item is removed mid-process, the
+            // factory call gets cancelled — but the provider on the other
+            // end is fine. Treating this as a "factory failure" would:
+            //   1. Stash the OperationCanceledException as _lastFactoryException,
+            //      so every subsequent caller during the 30s cooldown re-throws
+            //      cancellation — and MultiConnectionNntpClient's
+            //      `when (e.IsCancellationException())` catch then bypasses
+            //      RecordFailure, leaving the provider's breaker at F=0 even
+            //      though we've been throwing on every call.
+            //   2. Trigger AdaptiveOnFactoryFailure, halving _adaptiveMaxConnections.
+            //      Repeated cancellation cascades collapse the cap to 1
+            //      with no diagnostic signal that anything is wrong.
+            //   3. Engage the 30s factory cooldown, so even healthy callers
+            //      get failed for half a minute over one client disconnect.
+            //
+            // Observed in production: cap=1/100 with lifetime[F=0,S=0,NA=0]
+            // — pool collapsed entirely through cancellation pollution while
+            // the breaker showed pristine state. Release the gate and re-throw
+            // without touching any of the failure-tracking state.
+            _gate.Release();
+            throw;
+        }
         catch (Exception ex)
         {
+            // Real factory failure: update the failure-tracking state BEFORE
+            // releasing the gate so the next waiter observes the new cooldown
+            // / adaptive cap. Releasing earlier creates a race where a queued
+            // caller can pass the FactoryFailureThreshold check on the OLD
+            // state and issue another factory call under the old concurrency
+            // limit — defeating the cooldown / AIMD backoff this catch is
+            // meant to enforce.
             _lastFactoryException = ex;
             Interlocked.Increment(ref _consecutiveFactoryFailures);
             Volatile.Write(ref _lastFactoryFailureTickMs, Environment.TickCount64);
@@ -172,7 +206,7 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             // Adaptive shrink: don't shrink on auth failures (config issue,
             // not concurrency pressure — adding to the floor wouldn't help).
             if (!isBadCredentials) AdaptiveOnFactoryFailure();
-            _gate.Release(); // free the permit on failure
+            _gate.Release();
             throw;
         }
 
