@@ -122,7 +122,12 @@ public class DiagnosticLoggerService(UsenetStreamingClient usenetClient) : Backg
                 providerSummary.Append("|last=\"").Append(p.LastFailureReason).Append('"');
         }
 
-        Log.Information(
+        // Emit at Warning so this line survives the common LOG_LEVEL=Warning
+        // production config. The diagnostic snapshot is exactly the data we
+        // need when chasing "pod CPU pegged" reports, and being filtered out
+        // by the same env var that operators set to reduce log volume defeats
+        // the purpose — without it we're stuck guessing from absent context.
+        Log.Warning(
             "diag cascade={Cascade} providers=[{Providers}] queue={QueueTotal}/{QueueEligible} cleanup=[blob={Blob},nzb={Nzb},dav={Dav}] tp=[t={Threads},pend={Pending},done={Done}] mem={MemMb}MB gc=[g0={G0},g1={G1},g2={G2}]",
             cascadeEngaged ? "engaged" : "released",
             providerSummary.ToString(),
