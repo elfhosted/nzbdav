@@ -146,9 +146,39 @@ public sealed class ConnectionPool<T> : IDisposable, IAsyncDisposable
             if (remainingMs > 0)
             {
                 _gate.Release();
-                await Task.Delay(remainingMs, linked.Token).ConfigureAwait(false);
-                throw _lastFactoryException ?? new InvalidOperationException(
+                var factoryException = _lastFactoryException ?? new InvalidOperationException(
                     $"Connection factory circuit breaker open ({failures} consecutive failures).");
+                try
+                {
+                    await Task.Delay(remainingMs, linked.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (_sweepCts.IsCancellationRequested)
+                {
+                    // Pool itself is disposing — propagate cancellation as-is.
+                    throw;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Caller cancelled while we were sitting in the cooldown
+                    // wait. The factory had a real failure (which is why we
+                    // were waiting at all) — surface THAT exception instead
+                    // of OperationCanceledException so the upstream catch
+                    // path in MultiConnectionNntpClient takes its
+                    // non-cancellation arm and calls RecordFailure on the
+                    // provider's breaker. Otherwise every caller cancelled
+                    // mid-cooldown silently buries the underlying factory
+                    // failure and the breaker stays at F=0 even though the
+                    // pool has been failing every caller for 30s.
+                    //
+                    // The cancelled caller's response is going to a
+                    // disconnected client anyway (HttpContext.RequestAborted,
+                    // queue-item-removed, etc.), so the choice between
+                    // OperationCanceledException and CouldNotConnect doesn't
+                    // change observable behaviour to them — but it does fix
+                    // the breaker's view of the world.
+                    throw factoryException;
+                }
+                throw factoryException;
             }
         }
 
