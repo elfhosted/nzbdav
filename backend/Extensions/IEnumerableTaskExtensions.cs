@@ -72,20 +72,47 @@ public static class IEnumerableTaskExtensions
             throw new ArgumentException("concurrency must be greater than zero.");
 
         var runningTasks = new HashSet<Task<T>>();
-        foreach (var task in tasks)
+        try
         {
-            runningTasks.Add(task);
-            if (runningTasks.Count < concurrency) continue;
-            var completedTask = await Task.WhenAny(runningTasks).ConfigureAwait(false);
-            runningTasks.Remove(completedTask);
-            yield return await completedTask.ConfigureAwait(false);
-        }
+            foreach (var task in tasks)
+            {
+                runningTasks.Add(task);
+                if (runningTasks.Count < concurrency) continue;
+                var completedTask = await Task.WhenAny(runningTasks).ConfigureAwait(false);
+                runningTasks.Remove(completedTask);
+                yield return await completedTask.ConfigureAwait(false);
+            }
 
-        while (runningTasks.Count > 0)
+            while (runningTasks.Count > 0)
+            {
+                var completedTask = await Task.WhenAny(runningTasks).ConfigureAwait(false);
+                runningTasks.Remove(completedTask);
+                yield return await completedTask.ConfigureAwait(false);
+            }
+        }
+        finally
         {
-            var completedTask = await Task.WhenAny(runningTasks).ConfigureAwait(false);
-            runningTasks.Remove(completedTask);
-            yield return await completedTask.ConfigureAwait(false);
+            // When the iterator exits abnormally (yielded a faulted task and
+            // the caller propagated, or the caller broke out early), the
+            // remaining tasks in `runningTasks` would otherwise become orphans
+            // — they were started but no one is observing them, and they keep
+            // pinning threadpool threads until they complete naturally. For
+            // NNTP fetches with 15s connect timeouts × 2 retries, that's 30s
+            // per orphan; with QueueManager starting items at ~10/s and each
+            // item fanning out 8 concurrent fetches, the orphans accumulate
+            // faster than they complete and the threadpool starves (observed
+            // in production as t=83->999, pend=121->975 over 14 min while
+            // cascade=released and only 2 actual provider failures recorded).
+            //
+            // We can't cancel them (no CT was passed in), but awaiting them
+            // here ensures the iteration can't leave tasks running that the
+            // caller has stopped paying attention to. Per-item failure path
+            // gets ~30s slower in exchange for a stable threadpool.
+            if (runningTasks.Count > 0)
+            {
+                try { await Task.WhenAll(runningTasks).ConfigureAwait(false); }
+                catch { /* orphan task failures are not the caller's problem */ }
+            }
         }
     }
 }
