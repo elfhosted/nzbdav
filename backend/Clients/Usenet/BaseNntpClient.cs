@@ -26,14 +26,42 @@ public class BaseNntpClient : NntpClient
 {
     private readonly UsenetClient _client = new();
 
+    // Hard cap on TCP+TLS+welcome-banner time per provider. Without this, a
+    // provider whose hostname resolves but whose TCP layer black-holes (no
+    // SYN/ACK, no RST — e.g. a misconfigured firewall, a DNS round-robin
+    // pointing at a dead host, or auth/credential mismatch causing the server
+    // to accept then never respond) hangs the calling task indefinitely. That
+    // pins a threadpool slot, threadpool injection grows unboundedly, and the
+    // pod becomes unresponsive to *all* incoming work (WebDAV, SAB API,
+    // websocket) even though no individual call is "wrong" — observed in
+    // production as a tenant whose queue stuck at 129/129 with t=82->991
+    // threads, pend=37->1098, while every provider showed lifetime S=0.
+    // ProviderCircuitBreaker can only trip after RecordFailure fires, and
+    // RecordFailure can only fire after the connect returns; so without a
+    // timeout the breaker is bypassed entirely for hung providers.
+    private static readonly TimeSpan ConnectTimeout =
+        int.TryParse(Environment.GetEnvironmentVariable("NNTP_CONNECT_TIMEOUT_SECONDS"), out var v) && v > 0
+            ? TimeSpan.FromSeconds(v)
+            : TimeSpan.FromSeconds(15);
+
     public override async Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
     {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(ConnectTimeout);
         try
         {
             if (useSsl && ShouldUseLenientTlsForHost(host))
-                await ConnectWithLenientTlsAsync(host, port, cancellationToken).ConfigureAwait(false);
+                await ConnectWithLenientTlsAsync(host, port, timeoutCts.Token).ConfigureAwait(false);
             else
-                await _client.ConnectAsync(host, port, useSsl, cancellationToken).ConfigureAwait(false);
+                await _client.ConnectAsync(host, port, useSsl, timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The local timeout fired, not the caller's token. Convert to a
+            // meaningful failure exception so the provider's breaker counts
+            // this as a real failure (vs. a caller-cancel that wouldn't).
+            throw new CouldNotConnectToUsenetException(
+                $"Connection to {host}:{port} timed out after {ConnectTimeout.TotalSeconds:F0}s.");
         }
         catch (Exception e) when (!e.IsCancellationException())
         {
