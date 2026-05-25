@@ -53,6 +53,18 @@ app.use(
 app.disable("x-powered-by");
 app.set("trust proxy", true);
 
+// Frontend-local healthcheck endpoint. Registered BEFORE the React Router
+// catch-all so it bypasses SSR entirely — a probe hit doesn't depend on
+// the backend being reachable, doesn't run loaders, doesn't trigger any
+// fetch. Returns 200 as long as the Node process is alive and the express
+// app is wired up. Without this, kubelet's startup probe hits "/" which
+// goes through SSR; if the backend is slow, the loader's fetch times out
+// at 10s, SSR returns 500, the probe fails, and Kubernetes kills the pod
+// even though Node itself is fine.
+app.get("/healthz", (_req, res) => {
+  res.status(200).type("text/plain").send("ok");
+});
+
 // Custom morgan token: raw TCP peer (ignores trust-proxy / X-Forwarded-For).
 morgan.token("socket-addr", (req) =>
   (req as any).socket?.remoteAddress
